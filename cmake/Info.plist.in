@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Общий образец описания пакета .app для всех программ TMC Suite.
+  Заполняется функцией tmc_mac_bundle() из cmake/TmcMacBundle.cmake.
+  Вручную под каждую программу не копировать: правится только этот файл.
+
+  Подстановки записаны в виде @ИМЯ@, а не в фигурных скобках, намеренно: CMake,
+  копируя готовое описание в пакет, ещё раз пробегает по нему и заменяет свои
+  собственные величины MACOSX_BUNDLE_*, записанные как раз фигурными скобками.
+  Разные скобки исключают путаницу — и по той же причине фигурных скобок в этом
+  файле, включая пояснения, быть не должно: CMake разбирает и их тоже.
+-->
+<plist version="1.0">
+<dict>
+	<!-- Имя исполняемого файла внутри Contents/MacOS. -->
+	<key>CFBundleExecutable</key>
+	<string>@TMC_BUNDLE_EXECUTABLE@</string>
+
+	<!-- Имя, которое система показывает в полосе меню и в списке программ. -->
+	<key>CFBundleName</key>
+	<string>@TMC_BUNDLE_NAME@</string>
+	<key>CFBundleDisplayName</key>
+	<string>@TMC_BUNDLE_NAME@</string>
+
+	<!-- Опознавательный знак программы. По нему система хранит настройки,
+	     права доступа и связи с типами файлов, поэтому он должен быть
+	     постоянным и неповторимым. -->
+	<key>CFBundleIdentifier</key>
+	<string>@TMC_BUNDLE_IDENTIFIER@</string>
+
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+
+	<!-- Версия для человека и версия для системы (обновления). -->
+	<key>CFBundleShortVersionString</key>
+	<string>@TMC_BUNDLE_VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@TMC_BUNDLE_VERSION@</string>
+
+	<!-- Значок. Файл лежит в Contents/Resources; имя пишется БЕЗ пути.
+	     Пока значка нет, строка остаётся пустой — система показывает
+	     общий значок программы, и это не мешает запуску. -->
+	<key>CFBundleIconFile</key>
+	<string>@TMC_BUNDLE_ICON@</string>
+
+	<!-- Самая старая система, на которой программу разрешено запускать.
+	     Должна совпадать с CMAKE_OSX_DEPLOYMENT_TARGET, иначе система
+	     пустит программу туда, где её вызовы ещё не работают. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>@TMC_BUNDLE_MIN_OS@</string>
+
+	<!-- Экраны Retina: без этого система рисовала бы окно вчетверо крупнее
+	     и размывала бы его. Для интерфейса 1:1 с Windows обязательно. -->
+	<key>NSHighResolutionCapable</key>
+	<true/>
+
+	<!-- Зачем программе доступ к папкам пользователя. macOS спрашивает
+	     разрешение при первом обращении к «Рабочему столу», «Документам» и
+	     «Загрузкам»; без этих строк система показывает безликий вопрос, а
+	     пока на него не ответили, программа стоит. Задания и выходные файлы
+	     расчёта лежат рядом с заданием, то есть обычно как раз в этих
+	     папках. -->
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Чтобы открывать задания и записывать выходные файлы расчёта, лежащие на Рабочем столе.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Чтобы открывать задания и записывать выходные файлы расчёта, лежащие в папке «Документы».</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Чтобы открывать задания и записывать выходные файлы расчёта, лежащие в папке «Загрузки».</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Чтобы открывать задания и записывать выходные файлы расчёта на съёмном носителе.</string>
+
+	<!-- Программа с окнами (а не служба без интерфейса). -->
+	<key>LSBackgroundOnly</key>
+	<false/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+
+	<key>NSHumanReadableCopyright</key>
+	<string>@TMC_BUNDLE_COPYRIGHT@</string>
+
+	<!-- Типы файлов, которые программа открывает двойным щелчком в Finder.
+	     Описание своё у каждой программы, поэтому оно не пишется здесь, а
+	     подставляется величиной TMC_BUNDLE_DOCUMENT_TYPES, заданной в
+	     CMakeLists самой программы перед вызовом tmc_mac_bundle. Общий список
+	     задавать нельзя: Finder предлагал бы открыть задание .tpl, например,
+	     вьювером S-матриц. У программ, где величина не задана, строка ниже
+	     остаётся пустой, и раздела в описании просто нет. -->
+@TMC_BUNDLE_DOCUMENT_TYPES@
+</dict>
+</plist>

@@ -1,0 +1,5 @@
+# Скопировать в tools/dev/mac.conf и заполнить.
+MAC_HOST=192.168.1.50      # IP мака или имя вида macbook-air.local
+MAC_USER=user              # короткое имя пользователя на маке (whoami)
+MAC_PORT=22
+MAC_DIR='~/Desktop/TMC_Suite_MacOS'   # рабочий каталог на маке (там лежат .app)

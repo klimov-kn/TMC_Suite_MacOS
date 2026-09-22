@@ -1,0 +1,7 @@
+#TMCGROTS
+!Graphics parameters
+!Graphics data
+!file name : poly.$os
+!Data file for draw graphics
+!TFileName GraphicsName DrawFlag Input1 Mod1 Input2 Mod2
+poly. poly. 1 1 1 1 1

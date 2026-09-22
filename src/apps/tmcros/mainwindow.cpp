@@ -1,0 +1,824 @@
+#include "mainwindow.h"
+
+#include <QApplication>
+#include <QCloseEvent>
+#include <QDialog>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QLabel>
+#include <QMdiArea>
+#include <QMdiSubWindow>
+#include <QMenuBar>
+#include <QMessageBox>
+#include <QPixmap>
+#include <QStatusBar>
+#include <QToolBar>
+
+#include "mfcviewwidget.h"
+#include "printsupport.h"
+#include "recentfiles.h"
+#include "commandupdate.h"
+#include "menuroles.h"
+#include "theme.h"
+#include "mousewatchdog.h"
+#include "windowplacement.h"
+
+// Классы, перенесённые из Windows-версии: документ, вид и рамка окна.
+#include "tmcgroutdoc.h"
+#include "tmcgroutview.h"
+#include "mainfrm.h"
+#include "resource.h"
+
+// Разметка диалогов из dialogs/dialog_registry.cpp (порождён tools/rc2ui.py):
+// заполняет таблицы слоя совместимости — «диалог -> разметка» и
+// «номер элемента -> имя».
+void TmcInstallDialogs_tmcros();
+
+namespace {
+
+// Подписи меню — дословно из ресурсов Windows-версии (IDR_TMCGROTYPE).
+// Мнемоника «&» и подсказки клавиш сохранены: пользователь, привыкший к Alt+F,
+// должен попасть в то же меню.
+struct MenuItem
+{
+    UINT        id;          // 0 — разделитель
+    const char *text;
+    const char *shortcut;
+};
+
+const MenuItem kFileMenu[] = {
+    { ID_FILE_NEW,           "&New",             "Ctrl+N" },
+    { ID_FILE_OPEN,          "&Open...",         "Ctrl+O" },
+    { ID_FILE_CLOSE,         "&Close",           nullptr },
+    { ID_FILE_SAVE,          "&Save",            "Ctrl+S" },
+    { ID_FILE_SAVE_AS,       "Save &As...",      nullptr },
+    { 0, nullptr, nullptr },
+    { ID_FILE_PRINT,         "&Print...",        "Ctrl+P" },
+    { ID_FILE_PRINT_PREVIEW, "Print Pre&view",   nullptr },
+    { ID_FILE_PRINT_SETUP,   "P&rint Setup...",  nullptr },
+    { 0, nullptr, nullptr },
+    { ID_APP_EXIT,           "E&xit",            nullptr },
+};
+
+const MenuItem kEditMenu[] = {
+    { ID_EDIT_DOCUMENT,           "&Characteristics",      "Ctrl+D" },
+    { ID_EDIT_ADDCHARACTERISTICS, "&Add characteristics",  "Ctrl+A" },
+    { ID_EDIT_TOSMATRIX,          "&To S-matrix",          "Alt+T" },
+    { ID_EDIT_EDIT,               "&Editor",               "Alt+F7" },
+};
+
+const MenuItem kZoomMenu[] = {
+    { ID_VIEW_RESIZECTRLR,   "&ReSize viewport", "Ctrl+R" },
+    { 0, nullptr, nullptr },
+    { ID_VIEW_ZOOM_ZOOMP,    "Zoom +",           "+" },
+    { ID_VIEW_ZOOM_ZOOMXP,   "Zoom +X",          "X" },
+    { ID_VIEW_ZOOM_ZOOMYP,   "Zoom +Y",          "Y" },
+    { ID_VIEW_ZOOM_ZOOM,     "Zoom -",           "-" },
+    { ID_VIEW_ZOOM_ZOOMX,    "Zoom -X",          "Shift+X" },
+    { ID_VIEW_ZOOM_ZOOMY,    "Zoom -Y",          "Shift+Y" },
+    { 0, nullptr, nullptr },
+    { ID_VIEW_RESIZEWINDOW,  "R&esize window",   "Ctrl+T" },
+    { ID_VIEW_AUTOXSIZE,     "Auto X size",      "Alt+X" },
+    { ID_VIEW_AUTOYSIZE,     "Auto Y size",      "Alt+Y" },
+};
+
+const MenuItem kChangeXMenu[] = {
+    { ID_VIEW_CHANGEXMAXXMIN_DECRIMENT,        "Decrement", "Left" },
+    { ID_VIEW_CHANGEXMAXXMIN_INCREMENT,        "Increment", "Right" },
+    { ID_VIEW_TRANSLATE_CHANGEXMAXXMIN_HOME,   "Home",      "Home" },
+    { ID_VIEW_TRANSLATE_CHANGEXMAXXMIN_END,    "End",       "End" },
+};
+
+const MenuItem kChangeYMenu[] = {
+    { ID_VIEW_CHANGEYMAXYMIN_DECREMENT, "Decrement", "V" },
+    { ID_VIEW_CHANGEYMAXYMIN_INCREMENT, "Increment", "Up" },
+};
+
+const MenuItem kColorMenu[] = {
+    { ID_CONFIG_COLOR_BACKGROUND, "&Background", nullptr },
+    { ID_CONFIG_COLOR_GRID,       "&Grid",       nullptr },
+    { ID_CONFIG_COLOR_AXIS,       "&Axies",      nullptr },
+    { ID_CONFIG_COLORPOINT,       "&Point",      nullptr },
+    { ID_CONFIG_COLOR_GRAPHICS,   "&Graphics",   nullptr },
+};
+
+// Панель инструментов — порядок кнопок и разделителей из секции TOOLBAR.
+struct ToolItem
+{
+    UINT        id;          // 0 — разделитель
+    const char *iconName;
+    const char *tip;
+};
+
+const ToolItem kToolBar[] = {
+    { ID_FILE_OPEN,                          "ID_FILE_OPEN",                          "Open" },
+    { 0, nullptr, nullptr },
+    { ID_EDIT_ADDCHARACTERISTICS,            "ID_EDIT_ADDCHARACTERISTICS",            "Add characteristics" },
+    { ID_EDIT_DOCUMENT,                      "ID_EDIT_DOCUMENT",                      "Characteristics" },
+    { ID_EDIT_TOSMATRIX,                     "ID_EDIT_TOSMATRIX",                     "To S-matrix" },
+    { 0, nullptr, nullptr },
+    { ID_EDIT_GRAPHICSPARAMETERS,            "ID_EDIT_GRAPHICSPARAMETERS",            "Viewport" },
+    { ID_VIEW_GRAPHICS,                      "ID_VIEW_GRAPHICS",                      "Redraw data" },
+    { 0, nullptr, nullptr },
+    { ID_VIEW_RESIZECTRLR,                   "ID_VIEW_RESIZECTRLR",                   "ReSize viewport" },
+    { 0, nullptr, nullptr },
+    { ID_VIEW_ZOOM_ZOOMP,                    "ID_VIEW_ZOOM_ZOOMP",                    "Zoom +" },
+    { ID_VIEW_ZOOM_ZOOMXP,                   "ID_VIEW_ZOOM_ZOOMXP",                   "Zoom +X" },
+    { ID_VIEW_ZOOM_ZOOMYP,                   "ID_VIEW_ZOOM_ZOOMYP",                   "Zoom +Y" },
+    { ID_VIEW_ZOOM_ZOOM,                     "ID_VIEW_ZOOM_ZOOM",                     "Zoom -" },
+    { ID_VIEW_ZOOM_ZOOMX,                    "ID_VIEW_ZOOM_ZOOMX",                    "Zoom -X" },
+    { ID_VIEW_ZOOM_ZOOMY,                    "ID_VIEW_ZOOM_ZOOMY",                    "Zoom -Y" },
+    { 0, nullptr, nullptr },
+    { ID_VIEW_RESIZEWINDOW,                  "ID_VIEW_RESIZEWINDOW",                  "Resize window" },
+    { ID_VIEW_AUTOXSIZE,                     "ID_VIEW_AUTOXSIZE",                     "Auto X size" },
+    { ID_VIEW_AUTOYSIZE,                     "ID_VIEW_AUTOYSIZE",                     "Auto Y size" },
+    { 0, nullptr, nullptr },
+    { ID_VIEW_TRANSLATE_CHANGEXMAXXMIN_HOME, "ID_VIEW_TRANSLATE_CHANGEXMAXXMIN_HOME", "Home" },
+    { ID_VIEW_TRANSLATE_CHANGEXMAXXMIN_END,  "ID_VIEW_TRANSLATE_CHANGEXMAXXMIN_END",  "End" },
+    { ID_VIEW_CHANGEXMAXXMIN_DECRIMENT,      "ID_VIEW_CHANGEXMAXXMIN_DECRIMENT",      "Decrement X" },
+    { ID_VIEW_CHANGEXMAXXMIN_INCREMENT,      "ID_VIEW_CHANGEXMAXXMIN_INCREMENT",      "Increment X" },
+    { ID_VIEW_CHANGEYMAXYMIN_DECREMENT,      "ID_VIEW_CHANGEYMAXYMIN_DECREMENT",      "Decrement Y" },
+    { ID_VIEW_CHANGEYMAXYMIN_INCREMENT,      "ID_VIEW_CHANGEYMAXYMIN_INCREMENT",      "Increment Y" },
+    { 0, nullptr, nullptr },
+    { ID_FILE_PRINT,                         "ID_FILE_PRINT",                         "Print" },
+    { ID_APP_ABOUT,                          "ID_APP_ABOUT",                          "About" },
+};
+
+// Подсказки команд — дословно из STRINGTABLE ресурса Windows-версии
+// (TMC_Suite/src/viewers/Tmcrtout/TMCGROUT.rc:930-1075). В MFC одна строка
+// таблицы описывала обе подсказки сразу: «строка состояния\nвсплывающая».
+// Первая половина уходит в setStatusTip, вторая — в setToolTip; там, где
+// перевода строки в ресурсе нет, всплывающей подсказки не было вовсе.
+struct CommandPrompt
+{
+    UINT        id;
+    const char *statusTip;
+    const char *toolTip;     // nullptr — в ресурсе второй половины нет
+};
+
+const CommandPrompt kPrompts[] = {
+    { ID_FILE_NEW,             "Create a new document",                           "New" },
+    { ID_FILE_OPEN,            "Open an existing document",                       "Open" },
+    { ID_FILE_CLOSE,           "Close the active document",                       "Close" },
+    { ID_FILE_SAVE,            "Save the active document",                        "Save" },
+    { ID_FILE_SAVE_AS,         "Save the active document with a new name",        "Save As" },
+    { ID_FILE_PRINT,           "Print the active document",                       "Print" },
+    { ID_FILE_PRINT_PREVIEW,   "Display full pages",                              "Print Preview" },
+    { ID_FILE_PRINT_SETUP,     "Change the printer and printing options",         "Print Setup" },
+    { ID_APP_ABOUT,            "Display program information, version number and copyright", "About" },
+    { ID_APP_EXIT,             "Quit the application; prompts to save documents",  "Exit" },
+
+    { ID_EDIT_DOCUMENT,        "Edit number of  input and falling or scattering, "
+                               "identificator of graphics, *.t file name",        "Characteristics parameters" },
+    { ID_EDIT_ADDCHARACTERISTICS, "Add new *.t file",                             "Add characteristics file" },
+    { ID_EDIT_TOSMATRIX,       "Export time signal data to S-matrix file",        "To S-matrix" },
+    { ID_EDIT_EDIT,            "Call extern editor for edit file.toc",            nullptr },
+
+    { ID_EDIT_GRAPHICSPARAMETERS, "Edit viewport parameters",                     "Views parameters" },
+    { ID_VIEW_GRAPHICS,        "Re-read data and re-drawing  window",             "Update data" },
+    { ID_VIEW_RESIZECTRLR,     "Resize current graphics viewport",                "Resize viewport" },
+    { ID_VIEW_RESIZEWINDOW,    "Resize current graphics window",                  "Resize window" },
+    { ID_VIEW_AUTOXSIZE,       "Auto size along X axies",                         "Auto size along X axies" },
+    { ID_VIEW_AUTOYSIZE,       "Auto size along Y axies",                         "Auto size along Y axies" },
+    { ID_VIEW_ZOOM_ZOOMP,      "Zoom +",                                          "Zoom +" },
+    { ID_VIEW_ZOOM_ZOOMXP,     "Zoom +X",                                         "Zoom +X" },
+    { ID_VIEW_ZOOM_ZOOMYP,     "Zoom +Y",                                         "Zoom +Y" },
+    { ID_VIEW_ZOOM_ZOOM,       "Zoom -",                                          "Zoom -" },
+    { ID_VIEW_ZOOM_ZOOMX,      "Zoom -X",                                         "Zoom -X" },
+    { ID_VIEW_ZOOM_ZOOMY,      "Zoom -Y",                                         "Zoom -Y" },
+    { ID_VIEW_CHANGEXMAXXMIN_DECRIMENT, "Decrement Xmin and Xmax",                "Decrement Xmin and Xmax" },
+    { ID_VIEW_CHANGEXMAXXMIN_INCREMENT, "Increment Xmin and Xmax",                "Increment Xmin and Xmax" },
+    { ID_VIEW_CHANGEYMAXYMIN_DECREMENT, "Decrement Ymin and Ymax",                "Decrement Ymin and Ymax" },
+    { ID_VIEW_CHANGEYMAXYMIN_INCREMENT, "Increment Ymin and Ymax",                "Increment Ymin and Ymax" },
+    { ID_VIEW_TRANSLATE_CHANGEXMAXXMIN_HOME, "Change Xmin auto",                  "Change Xmin auto" },
+    { ID_VIEW_TRANSLATE_CHANGEXMAXXMIN_END,  "Change Xmax auto",                  "Change Xmax auto" },
+
+    { ID_CONFIG_EDITOR,        "Change extern editor",                            nullptr },
+    { ID_CONFIG_FONT,          "Change font, font size and color",                nullptr },
+    { ID_CONFIG_COLOR_BACKGROUND, "Change color for background",                  nullptr },
+    { ID_CONFIG_COLOR_GRID,    "Change color for grid",                           nullptr },
+    { ID_CONFIG_COLOR_AXIS,    "Change color for axis",                           nullptr },
+    { ID_CONFIG_COLORPOINT,    "Change color for point",                          nullptr },
+    { ID_CONFIG_COLOR_GRAPHICS, "Change color for graphics",                      nullptr },
+};
+
+// Второе сочетание клавиш для команды. В таблице акселераторов IDR_MAINFRAME
+// у части команд их два: в меню Windows показывала одно, но работали оба.
+struct ExtraKey
+{
+    UINT     id;
+    Qt::Key  key;
+};
+
+const ExtraKey kExtraKeys[] = {
+    { ID_VIEW_CHANGEXMAXXMIN_DECRIMENT, Qt::Key_Less },          // "<" рядом с Left
+    { ID_VIEW_CHANGEXMAXXMIN_INCREMENT, Qt::Key_Greater },       // ">" рядом с Right
+    { ID_VIEW_CHANGEYMAXYMIN_DECREMENT, Qt::Key_Down },          // VK_DOWN рядом с V
+    { ID_VIEW_CHANGEYMAXYMIN_INCREMENT, Qt::Key_AsciiCircum },   // код 94 рядом с Up
+};
+
+// Окно «О программе» — диалог IDD_ABOUTBOX ресурса Windows-версии
+// (dialogs/IDD_ABOUTBOX.ui). Значок в ресурсе был элементом со стилем SS_ICON и
+// ссылкой на IDR_MAINFRAME; картинку rc2ui.py перенести не может, поэтому она
+// подставляется здесь, а порождённый .ui остаётся нетронутым.
+class AboutDialog : public CDialog
+{
+public:
+    AboutDialog() : CDialog(IDD_ABOUTBOX) {}
+
+    BOOL OnInitDialog() override
+    {
+        const BOOL ok = CDialog::OnInitDialog();
+        if (QDialog *dlg = static_cast<QDialog *>(GetSafeHwnd())) {
+            if (QLabel *icon = dlg->findChild<QLabel *>(QStringLiteral("IDC_STATIC")))
+                icon->setPixmap(QPixmap(QStringLiteral(":/icons/tmcgrout_32.png")));
+        }
+        return ok;
+    }
+};
+
+} // namespace
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+{
+    // Пиктограммы собраны в статическую библиотеку. Компоновщик выбрасывает
+    // инициализатор ресурсов, если на него никто не ссылается, поэтому зовём
+    // его явно — иначе панель окажется без картинок.
+    Q_INIT_RESOURCE(tmcros);
+
+    // Разметка диалогов (dialogs/dialog_registry.cpp, порождён tools/rc2ui.py).
+    // Вызов явный по той же причине, что и Q_INIT_RESOURCE: файл лежит в
+    // статической библиотеке, и без ссылки на него компоновщик его не подключит —
+    // диалоги остались бы без разметки.
+    TmcInstallDialogs_tmcros();
+
+    // Заголовок — как в ресурсах Windows-версии (строка IDR_MAINFRAME).
+    // Имя открытого документа Qt добавит сам, когда дочернее окно развёрнуто.
+    setWindowTitle(QStringLiteral("Tamic Rt Output Signal Viewer"));
+    setWindowIcon(QIcon(QStringLiteral(":/icons/appicon.png")));
+
+    m_mdi = new QMdiArea(this);
+    m_mdi->setViewMode(QMdiArea::SubWindowView);
+    m_mdi->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_mdi->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    setCentralWidget(m_mdi);
+    connect(m_mdi, &QMdiArea::subWindowActivated, this, &MainWindow::onSubWindowActivated);
+
+    createMenus();
+
+    // Перед показом каждого меню обновляем состояние его пунктов — тот же
+    // порядок, что был в MFC: каркас опрашивал обработчики обновления,
+    // а не хранил состояние отдельно.
+    for (QMenu *menu : menuBar()->findChildren<QMenu *>())
+        connect(menu, &QMenu::aboutToShow, this, [this]() { updateCommandStates(); });
+
+    createToolBar();
+    createStatusBar();
+
+    // Подписи подсказок ставим последними: панель инструментов подставляет свои
+    // временные, а таблица ресурса должна быть сильнее.
+    applyCommandPrompts();
+
+    // Код, перенесённый из Windows-версии, достаёт строку состояния через
+    // главное окно приложения. Отдаём ему рамку, у которой строка состояния
+    // связана с нашей — так PutTrace и PutStatistics работают без правок.
+    // Хозяин строки состояния — виджет активного документа: его назначают
+    // createDocumentWindow и onSubWindowActivated.
+    m_frame = new CMainFrame();
+    m_frame->m_wndStatusBar.SetHost(nullptr);
+    AfxGetApp()->m_pMainWnd = m_frame;
+
+    resize(1100, 780);
+
+    // Положение окна запоминается между запусками — как это делал
+    // каркас MFC. Иначе окно каждый раз появляется в новом месте.
+    tmcui::keepPlacement(this);
+
+    // Защита от «залипшего» захвата мыши дочерним окном: без неё
+    // программа может перестать отвечать после перетаскивания.
+    tmcui::installMouseGrabWatchdog(this);
+    updateMenuForDocument();
+}
+
+MainWindow::~MainWindow()
+{
+    for (TmcDocumentWindow *d : m_documents) {
+        // Сначала отвязываем вид от виджета. Виджеты Qt удаляются позже нас
+        // (они дети окна), и в своём деструкторе виджет-хозяин обращается к
+        // виду: если вид уже удалён, это обращение к освобождённой памяти —
+        // программа падала при выходе.
+        if (d->widget)
+            d->widget->setView(nullptr);
+        delete d->view;
+        delete d->doc;
+        delete d;
+    }
+    delete m_frame;
+}
+
+QAction *MainWindow::makeAction(UINT id, const QString &text, const QString &shortcut)
+{
+    QAction *a = new QAction(text, this);
+    // Номер команды храним в самом действии: по нему работают
+    // обновление состояния пунктов и автоматические проверки.
+    a->setData(int(id));
+    if (!shortcut.isEmpty())
+        a->setShortcut(QKeySequence(shortcut));
+    connect(a, &QAction::triggered, this, [this, id]() { dispatch(id); });
+    m_actions.insert(id, a);
+    return a;
+}
+
+void MainWindow::createMenus()
+{
+    QMenu *file = menuBar()->addMenu(QStringLiteral("&File"));
+    for (const MenuItem &it : kFileMenu) {
+        if (!it.id) { file->addSeparator(); continue; }
+        file->addAction(makeAction(it.id, QString::fromLatin1(it.text),
+                                   it.shortcut ? QString::fromLatin1(it.shortcut) : QString()));
+    }
+
+    // Список недавних файлов. В Windows-версии его вёл каркас MFC и показывал
+    // в меню File перед «Exit» — здесь то же место и тот же порядок.
+    m_recent = new TmcRecentFiles(this);
+    {
+        const QList<QAction *> items = file->actions();
+        QAction *beforeExit = nullptr;
+        for (int i = items.size() - 1; i >= 0; --i) {
+            if (items.at(i)->isSeparator()) { beforeExit = items.at(i); break; }
+        }
+        // В ресурсе пункт «Recent File» отделён от соседей с обеих сторон
+        // (IDR_TMCGROTYPE: SEPARATOR, Recent File, SEPARATOR, Exit). Второй
+        // разделитель уже стоит в kFileMenu, первый добавляем здесь: иначе
+        // список сливается с «Print Setup».
+        file->insertSeparator(beforeExit);
+        m_recent->attachToMenu(file, beforeExit);
+        m_recent->load();
+        connect(m_recent, &TmcRecentFiles::fileRequested,
+                this, &MainWindow::openDocument);
+    }
+
+    QMenu *edit = menuBar()->addMenu(QStringLiteral("&Edit"));
+    for (const MenuItem &it : kEditMenu)
+        edit->addAction(makeAction(it.id, QString::fromLatin1(it.text),
+                                   it.shortcut ? QString::fromLatin1(it.shortcut) : QString()));
+
+    QMenu *view = menuBar()->addMenu(QStringLiteral("&View"));
+    view->addAction(makeAction(ID_EDIT_GRAPHICSPARAMETERS, QStringLiteral("&Viewport"), QStringLiteral("Ctrl+H")));
+    view->addAction(makeAction(ID_VIEW_GRAPHICS, QStringLiteral("Redra&w data"), QStringLiteral("Ctrl+W")));
+    view->addSeparator();
+
+    QMenu *zoom = view->addMenu(QStringLiteral("Zoom"));
+    for (const MenuItem &it : kZoomMenu) {
+        if (!it.id) { zoom->addSeparator(); continue; }
+        zoom->addAction(makeAction(it.id, QString::fromLatin1(it.text),
+                                   it.shortcut ? QString::fromLatin1(it.shortcut) : QString()));
+    }
+
+    QMenu *translate = view->addMenu(QStringLiteral("Translate"));
+    QMenu *changeX = translate->addMenu(QStringLiteral("Change Xmax, Xmin"));
+    for (const MenuItem &it : kChangeXMenu)
+        changeX->addAction(makeAction(it.id, QString::fromLatin1(it.text),
+                                      it.shortcut ? QString::fromLatin1(it.shortcut) : QString()));
+    QMenu *changeY = translate->addMenu(QStringLiteral("Change Ymax, Ymin"));
+    for (const MenuItem &it : kChangeYMenu)
+        changeY->addAction(makeAction(it.id, QString::fromLatin1(it.text),
+                                      it.shortcut ? QString::fromLatin1(it.shortcut) : QString()));
+
+    view->addSeparator();
+    QAction *statusAction = new QAction(QStringLiteral("&Status Bar"), this);
+    statusAction->setCheckable(true);
+    statusAction->setChecked(true);
+    // Подсказки — из STRINGTABLE (ID_VIEW_STATUS_BAR, ID_VIEW_TOOLBAR).
+    statusAction->setStatusTip(QStringLiteral("Show or hide the status bar"));
+    statusAction->setToolTip(QStringLiteral("Toggle StatusBar"));
+    connect(statusAction, &QAction::toggled, this, [this](bool on) { statusBar()->setVisible(on); });
+    view->addAction(statusAction);
+
+    QAction *toolbarAction = new QAction(QStringLiteral("&Toolbar"), this);
+    toolbarAction->setCheckable(true);
+    toolbarAction->setChecked(true);
+    toolbarAction->setStatusTip(QStringLiteral("Show or hide the toolbar"));
+    toolbarAction->setToolTip(QStringLiteral("Toggle ToolBar"));
+    connect(toolbarAction, &QAction::toggled, this, [this](bool on) {
+        if (QToolBar *tb = findChild<QToolBar *>())
+            tb->setVisible(on);
+    });
+    view->addAction(toolbarAction);
+
+    QMenu *config = menuBar()->addMenu(QStringLiteral("&Config"));
+    config->addAction(makeAction(ID_CONFIG_EDITOR, QStringLiteral("&Editor")));
+    QMenu *color = config->addMenu(QStringLiteral("&Color"));
+    for (const MenuItem &it : kColorMenu)
+        color->addAction(makeAction(it.id, QString::fromLatin1(it.text)));
+    config->addAction(makeAction(ID_CONFIG_FONT, QStringLiteral("&Font")));
+
+    // Меню Window — четыре пункта ресурса (IDR_TMCGROTYPE), к которым каркас
+    // MFC сам дописывал список открытых окон; его собирает rebuildWindowMenu.
+    m_windowMenu = menuBar()->addMenu(QStringLiteral("&Window"));
+    QAction *newWindow = new QAction(QStringLiteral("&New Window"), this);
+    newWindow->setStatusTip(QStringLiteral("Open another window for the active document"));
+    newWindow->setToolTip(QStringLiteral("New Window"));
+    connect(newWindow, &QAction::triggered, this, [this]() {
+        if (TmcDocumentWindow *d = activeDocument())
+            openDocument(QString::fromLocal8Bit(d->doc->GetPathName()));
+    });
+    m_windowMenu->addAction(newWindow);
+    QAction *cascade = m_windowMenu->addAction(QStringLiteral("&Cascade"));
+    cascade->setStatusTip(QStringLiteral("Arrange windows so they overlap"));
+    cascade->setToolTip(QStringLiteral("Cascade Windows"));
+    connect(cascade, &QAction::triggered, m_mdi, &QMdiArea::cascadeSubWindows);
+    QAction *tile = m_windowMenu->addAction(QStringLiteral("&Tile"));
+    tile->setStatusTip(QStringLiteral("Arrange windows as non-overlapping tiles"));
+    tile->setToolTip(QStringLiteral("Tile Windows"));
+    connect(tile, &QAction::triggered, m_mdi, &QMdiArea::tileSubWindows);
+    QAction *arrange = m_windowMenu->addAction(QStringLiteral("&Arrange Icons"));
+    arrange->setStatusTip(QStringLiteral("Arrange icons at the bottom of the window"));
+    arrange->setToolTip(QStringLiteral("Arrange Icons"));
+    connect(arrange, &QAction::triggered, this, &MainWindow::arrangeIcons);
+    connect(m_windowMenu, &QMenu::aboutToShow, this, &MainWindow::rebuildWindowMenu);
+
+    QMenu *help = menuBar()->addMenu(QStringLiteral("&Help"));
+    help->addAction(makeAction(ID_APP_ABOUT, QStringLiteral("&About TMCROS...")));
+
+    // Переход между окнами MDI: в ресурсе это только акселераторы
+    // (VK_F6 -> ID_NEXT_PANE, Shift+VK_F6 -> ID_PREV_PANE), пункта меню у них
+    // нет, поэтому действия живут на самом окне.
+    QAction *nextPane = new QAction(this);
+    nextPane->setShortcut(QKeySequence(Qt::Key_F6));
+    connect(nextPane, &QAction::triggered, m_mdi, &QMdiArea::activateNextSubWindow);
+    addAction(nextPane);
+    QAction *prevPane = new QAction(this);
+    prevPane->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F6));
+    connect(prevPane, &QAction::triggered, m_mdi, &QMdiArea::activatePreviousSubWindow);
+    addAction(prevPane);
+
+    // Вторые сочетания из таблицы акселераторов: в меню показано одно,
+    // но нажатие любого из двух даёт ту же команду.
+    for (const ExtraKey &it : kExtraKeys) {
+        QAction *a = m_actions.value(it.id, nullptr);
+        if (!a)
+            continue;
+        QList<QKeySequence> keys = a->shortcuts();
+        keys.append(QKeySequence(it.key));
+        a->setShortcuts(keys);
+    }
+
+    // Общесистемная полоса меню macOS: пункты «Exit» и «About» уезжают в
+    // меню программы, все остальные остаются на своих местах (риск Р-4).
+    // На Linux и Windows вызов ничего не меняет.
+    menuroles::apply(menuBar());
+}
+
+void MainWindow::rebuildWindowMenu()
+{
+    // Каркас MFC дописывал в конец меню Window список открытых дочерних окон
+    // (подсказка AFX_IDS_MDICHILD «Activate this window»), отделяя его чертой.
+    // Список меняется, поэтому пересобираем его перед каждым показом меню.
+    for (QAction *a : m_windowListActions) {
+        m_windowMenu->removeAction(a);
+        delete a;
+    }
+    m_windowListActions.clear();
+
+    const QList<QMdiSubWindow *> subs = m_mdi->subWindowList();
+    if (subs.isEmpty())
+        return;
+
+    m_windowListActions.append(m_windowMenu->addSeparator());
+    int index = 1;
+    for (QMdiSubWindow *sub : subs) {
+        QAction *a = m_windowMenu->addAction(QStringLiteral("&%1 %2")
+                                                 .arg(index++)
+                                                 .arg(sub->windowTitle()));
+        a->setCheckable(true);
+        a->setChecked(sub == m_mdi->activeSubWindow());
+        a->setStatusTip(QStringLiteral("Activate this window"));
+        connect(a, &QAction::triggered, this, [this, sub]() { m_mdi->setActiveSubWindow(sub); });
+        m_windowListActions.append(a);
+    }
+}
+
+void MainWindow::arrangeIcons()
+{
+    // ID_WINDOW_ARRANGE: каркас MFC выстраивал значки свёрнутых дочерних окон
+    // вдоль нижнего края рабочей области. У QMdiArea такой команды нет, поэтому
+    // раскладываем свёрнутые подокна сами — в том же порядке и в том же месте.
+    const int areaWidth = m_mdi->viewport()->width();
+    const int areaHeight = m_mdi->viewport()->height();
+    int x = 0;
+    int row = 0;
+    int rowHeight = 0;
+    for (QMdiSubWindow *sub : m_mdi->subWindowList()) {
+        if (!sub->isMinimized())
+            continue;
+        const QSize size = sub->size();
+        if (x > 0 && x + size.width() > areaWidth) {
+            x = 0;
+            row += rowHeight;
+            rowHeight = 0;
+        }
+        sub->move(x, areaHeight - row - size.height());
+        x += size.width();
+        if (size.height() > rowHeight)
+            rowHeight = size.height();
+    }
+}
+
+void MainWindow::applyCommandPrompts()
+{
+    // Подсказки берём из таблицы ресурса, а не придумываем: та же строка в
+    // строке состояния и тот же текст всплывающей подсказки, что на Windows.
+    for (const CommandPrompt &it : kPrompts) {
+        QAction *a = m_actions.value(it.id, nullptr);
+        if (!a)
+            continue;
+        a->setStatusTip(QString::fromLatin1(it.statusTip));
+        if (it.toolTip)
+            a->setToolTip(QString::fromLatin1(it.toolTip));
+        else
+            // Второй половины в ресурсе нет — Windows показывала в подсказке
+            // ту же строку, что и в строке состояния.
+            a->setToolTip(QString::fromLatin1(it.statusTip));
+    }
+}
+
+void MainWindow::createToolBar()
+{
+    QToolBar *tb = addToolBar(QStringLiteral("Toolbar"));
+    tb->setMovable(false);
+    tb->setIconSize(QSize(16, 15));    // размер кнопок из ресурсов Windows
+
+    for (const ToolItem &it : kToolBar) {
+        if (!it.id) { tb->addSeparator(); continue; }
+        QAction *a = m_actions.value(it.id, nullptr);
+        if (!a) {
+            a = makeAction(it.id, QString::fromLatin1(it.tip));
+        }
+        a->setIcon(theme::commandIcon(QString::fromLatin1(it.iconName)));
+        a->setToolTip(QString::fromLatin1(it.tip));
+        tb->addAction(a);
+    }
+}
+
+void MainWindow::createStatusBar()
+{
+    // Текст по умолчанию — из строковой таблицы MFC (AFX_IDS_IDLEMESSAGE).
+    m_statusMain = new QLabel(QStringLiteral("Ready"), this);
+    m_statusExtra = new QLabel(QString(), this);
+    statusBar()->addWidget(m_statusMain, 1);
+    statusBar()->addPermanentWidget(m_statusExtra);
+}
+
+void MainWindow::onStatusText(int pane, const QString &text)
+{
+    if (pane <= 0)
+        m_statusMain->setText(text);
+    else
+        m_statusExtra->setText(text);
+}
+
+TmcDocumentWindow *MainWindow::activeDocument() const
+{
+    QMdiSubWindow *sub = m_mdi->activeSubWindow();
+    if (!sub)
+        return nullptr;
+    for (TmcDocumentWindow *d : m_documents) {
+        if (d->sub == sub)
+            return d;
+    }
+    return nullptr;
+}
+
+void MainWindow::dispatch(UINT commandId)
+{
+    // Сначала — вид активного окна: там живут обработчики Windows-версии.
+    if (TmcDocumentWindow *d = activeDocument()) {
+        MfcMessageMap map;
+        d->view->TmcBuildMessageMap(map);
+        if (map.call(commandId)) {
+            updateCommandStates();
+            d->widget->viewport()->update();
+            return;
+        }
+    }
+
+    // Затем — команды самого окна.
+    switch (commandId) {
+    case ID_FILE_NEW:   onNewDocument(); break;
+    case ID_FILE_OPEN:  onOpenDocument(); break;
+    case ID_FILE_CLOSE: onCloseDocument(); break;
+    case ID_APP_EXIT:   close(); break;
+    case ID_APP_ABOUT:  onAbout(); break;
+
+    // Печать идёт тем же кодом вида, что рисует на экране: контекст рисования
+    // подключается к принтеру, разрешение подставляется его собственное.
+    case ID_FILE_PRINT:
+        if (TmcDocumentWindow *d = activeDocument())
+            tmcprint::printView(this, d->view,
+                                QString::fromLocal8Bit(d->doc->GetTitle()));
+        break;
+    case ID_FILE_PRINT_PREVIEW:
+        if (TmcDocumentWindow *d = activeDocument())
+            tmcprint::previewView(this, d->view,
+                                  QString::fromLocal8Bit(d->doc->GetTitle()));
+        break;
+    case ID_FILE_PRINT_SETUP:
+        tmcprint::pageSetup(this);
+        break;
+    default:
+        // Команда есть в меню, но обработчика нет — как в MFC, где пункт
+        // остаётся недоступным. Молчим, чтобы не пугать пользователя.
+        break;
+    }
+}
+
+void MainWindow::onNewDocument()
+{
+    // Как в MFC: документ создаётся без пути, с заголовком «<тип><номер>».
+    // Файл для него заводит сам код документа при первом обращении — эта
+    // последовательность взята из Windows-версии и не меняется.
+    static int counter = 0;
+    const QString title = QStringLiteral("%1%2")
+                              .arg(QStringLiteral("TMCRTOS"))
+                              .arg(++counter);
+    createDocumentWindow(QString(), title);
+}
+
+void MainWindow::onOpenDocument()
+{
+    // Фильтр — из строковой таблицы Windows-версии (IDR_TMCGROTYPE):
+    // название фильтра и список расширений там одинаковы — "*.toc;*.$oc;*.t",
+    // поэтому в списке фильтров Windows показывала именно эту строку.
+    // Второй пункт «все файлы» MFC добавляла сама.
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Open"), QString(),
+        QStringLiteral("*.toc;*.$oc;*.t (*.toc *.$oc *.t);;All Files (*.*)"));
+    if (!path.isEmpty())
+        openDocument(path);
+}
+
+void MainWindow::openDocument(const QString &path)
+{
+    createDocumentWindow(path, QFileInfo(path).fileName());
+}
+
+void MainWindow::createDocumentWindow(const QString &path, const QString &title)
+{
+    TmcDocumentWindow *d = new TmcDocumentWindow;
+    d->doc = CTMCGROUTDoc::TmcCreate();
+    if (!path.isEmpty())
+        // Полный путь, а не тот, что дали: имя из командной строки бывает
+    // относительным, а рядом с документом ищутся файлы-спутники (для
+    // поля это топология .tt), и они разрешаются от имени документа.
+    d->doc->SetPathName(
+        QFileInfo(path).absoluteFilePath().toLocal8Bit().constData());
+    d->doc->SetTitle(title.toLocal8Bit().constData());
+
+    d->view = CTMCGROUTView::TmcCreate();
+    d->view->m_pDocument = d->doc;
+
+    d->widget = new MfcViewWidget(this);
+    d->widget->setView(d->view);
+    connect(d->widget, &MfcViewWidget::statusTextChanged, this, &MainWindow::onStatusText);
+
+    d->sub = m_mdi->addSubWindow(d->widget);
+    d->sub->setWindowTitle(title);
+    d->sub->setAttribute(Qt::WA_DeleteOnClose, false);
+    // Закрытие дочернего окна разбирает eventFilter — там же, где в
+    // Windows-версии это делала рамка дочернего окна (CChildFrame).
+    d->sub->installEventFilter(this);
+    d->widget->show();
+    // В Windows-версии дочернее окно создаётся развёрнутым (стиль WS_MAXIMIZE
+    // в CChildFrame::PreCreateWindow) — повторяем.
+    d->sub->showMaximized();
+
+    // Подложка области рисования — цвет фона из документа (в Windows его давало
+    // само окно; документ хранит тот же цвет).
+    d->doc->ReadGraphParametersDefault();
+    d->doc->ReadGraphParameters();
+    d->widget->setDocumentBackground(QColor(int(GetRValue(d->doc->scBackgoundColor)),
+                                            int(GetGValue(d->doc->scBackgoundColor)),
+                                            int(GetBValue(d->doc->scBackgoundColor))));
+
+    // Строку состояния наполняет код Windows-версии (PutTrace/PutStatistics)
+    // через рамку окна. Направляем её в виджет этого документа до первого
+    // обновления вида: правая ячейка заполняется уже при подготовке графиков.
+    m_frame->m_wndStatusBar.SetHost(d->widget);
+
+    // Вид читает документ и готовит графики — тот же порядок, что в MFC.
+    d->widget->initialUpdate();
+
+    m_documents.append(d);
+    if (m_recent && !path.isEmpty())
+        m_recent->add(path);
+    updateMenuForDocument();
+    updateWindowTitle();
+    // В строке состояния Windows-версия держит "Ready" — имя файла видно
+    // в заголовке окна, повторять его не нужно.
+}
+
+void MainWindow::onCloseDocument()
+{
+    if (QMdiSubWindow *sub = m_mdi->activeSubWindow())
+        sub->close();
+}
+
+void MainWindow::onAbout()
+{
+    // То же, что CTMCGROUTApp::OnAppAbout Windows-версии: модальный диалог
+    // IDD_ABOUTBOX, а не собственное окно с придуманным текстом.
+    AboutDialog dlg;
+    dlg.DoModal();
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() != QEvent::Close)
+        return QMainWindow::eventFilter(watched, event);
+
+    // Закрытие дочернего окна: в Windows рамка отпускала документ, и он
+    // закрывался совсем (CDocument::OnCloseDocument). Раньше подокно только
+    // пряталось — документ оставался в списке, а его таймер продолжал
+    // перечитывать файл.
+    for (TmcDocumentWindow *d : m_documents) {
+        if (d->sub != watched)
+            continue;
+        closeDocumentWindow(d);
+        event->accept();
+        return true;
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::closeDocumentWindow(TmcDocumentWindow *d)
+{
+    m_documents.removeOne(d);
+
+    // Строка состояния больше не принадлежит этому окну: иначе код из win_src
+    // писал бы в уже удалённый виджет.
+    if (m_frame && d->widget)
+        m_frame->m_wndStatusBar.SetHost(nullptr);
+
+    if (d->widget)
+        d->widget->setView(nullptr);   // виджет обращается к виду в деструкторе
+    delete d->view;
+    delete d->doc;
+
+    if (d->sub) {
+        d->sub->removeEventFilter(this);
+        m_mdi->removeSubWindow(d->sub);
+        d->sub->deleteLater();         // удаляем не внутри его же события
+    }
+    delete d;
+
+    updateMenuForDocument();
+    updateWindowTitle();
+}
+
+void MainWindow::onSubWindowActivated(QMdiSubWindow *)
+{
+    // Строка состояния показывает данные того документа, окно которого активно.
+    TmcDocumentWindow *d = activeDocument();
+    m_frame->m_wndStatusBar.SetHost(d ? d->widget : nullptr);
+    updateMenuForDocument();
+    updateWindowTitle();
+}
+
+void MainWindow::updateWindowTitle()
+{
+    // Заголовок MDI-окна в Windows: «<название программы> - [<имя документа>]»
+    // при развёрнутом дочернем окне и одно название, когда документов нет.
+    const QString base = QStringLiteral("Tamic Rt Output Signal Viewer");
+    TmcDocumentWindow *d = activeDocument();
+    if (!d)
+        setWindowTitle(base);
+    else
+        setWindowTitle(QStringLiteral("%1 - [%2]").arg(base, d->sub->windowTitle()));
+}
+
+void MainWindow::updateMenuForDocument()
+{
+    // В Windows-версии при отсутствии документа показывалось короткое меню
+    // (IDR_MAINFRAME). Здесь тот же смысл: команды документа недоступны.
+    const bool hasDoc = activeDocument() != nullptr;
+    for (QMap<UINT, QAction *>::iterator it = m_actions.begin(); it != m_actions.end(); ++it) {
+        const UINT id = it.key();
+        // «Print Setup» есть и в коротком меню IDR_MAINFRAME (без документа):
+        // в MFC команда висела на приложении, а не на виде.
+        const bool always = (id == ID_FILE_NEW || id == ID_FILE_OPEN ||
+                             id == ID_FILE_PRINT_SETUP ||
+                             id == ID_APP_EXIT || id == ID_APP_ABOUT);
+        it.value()->setEnabled(always || hasDoc);
+    }
+}
+
+void MainWindow::updateCommandStates()
+{
+    // Как в MFC перед показом меню: спрашиваем у вида активного окна, какие
+    // команды сейчас доступны и какие включены, и переносим ответ на пункты
+    // меню и кнопки панели.
+    TmcDocumentWindow *d = activeDocument();
+    tmccmd::updateActions(m_actions, d ? static_cast<CObject *>(d->view) : nullptr);
+}
