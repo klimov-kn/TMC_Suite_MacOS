@@ -56,8 +56,8 @@ opens here, and a result calculated here opens in the Windows version.
 
 ## Installation
 
-Download `TMC_Suite.dmg` from the project website, open it and drag all six programs into
-**Applications**.
+Download `TMC_Suite.dmg` from [Releases](../../releases) or from the project website, open it and
+drag all six programs into **Applications**.
 
 The applications are **not signed with Apple yet**, so the first launch has to be allowed: open
 **System Settings → Privacy & Security** and click **Open Anyway**, or run
@@ -182,8 +182,8 @@ Windows, открывается здесь, а результат, посчит�
 
 ## Установка
 
-Скачайте `TMC_Suite.dmg` с сайта проекта, откройте образ и перетащите все шесть программ в папку
-**«Программы»**.
+Скачайте `TMC_Suite.dmg` из раздела [Releases](../../releases) или с сайта проекта, откройте образ
+и перетащите все шесть программ в папку **«Программы»**.
 
 Приложения пока **не подписаны у Apple**, поэтому первый запуск нужно разрешить: откройте
 **Системные настройки → Конфиденциальность и безопасность** и нажмите **«Подтвердить вход»**, либо
