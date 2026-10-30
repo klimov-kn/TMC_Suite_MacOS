@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src=".github/images/banner_en.png" alt="TMC Suite — electrodynamic simulation of planar structures" width="100%">
+
 # TMC Suite for macOS
 
 **Scientific software package for electrodynamic simulation of planar structures**
@@ -127,6 +129,8 @@ See [`LICENSE`](LICENSE).
 ---
 
 <div align="center">
+
+<img src=".github/images/banner_ru.png" alt="TMC Suite — электродинамическое моделирование планарных структур" width="100%">
 
 # TMC Suite для macOS
 
