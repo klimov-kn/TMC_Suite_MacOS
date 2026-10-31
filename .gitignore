@@ -1,29 +1,36 @@
-# Каталоги сборки
-build/
-build-*/
-dist/
-cmake-build-*/
+# ============================================================
+#  TMC Suite for macOS - .gitignore
+# ============================================================
 
-# Объектные файлы и библиотеки
+# --- Build output ---
+/build/obj*/
+/build/out-*/
+/build/*.log
+
+# --- Binaries: distributed via GitHub Releases, not committed ---
+/dist/*
+!/dist/README.md
 *.o
 *.a
-*.so
-*.so.*
+*.dylib
+*.app/
+*.dmg
 
-# Временные файлы расчёта
-*~$Prepr$~
-$$vr$$s.prc
-*.tos
-*.soc
-*.$op
-
-# Среды разработки
-.vscode/
-.idea/
-*.user
-*.autosave
-
-# Прочее
+# --- Python helpers ---
 __pycache__/
 *.pyc
+
+# --- Archives / temporary dumps ---
+*.zip
+*.7z
+*.tar.gz
+
+# --- Editor / OS junk ---
 .DS_Store
+.vscode/
+*.user
+*~
+*.bak
+*.orig
+*.tmp
+*.log
