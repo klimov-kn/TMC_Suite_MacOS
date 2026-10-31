@@ -14,7 +14,7 @@ body:
     attributes:
       label: Версия пакета
       description: Указана в окне «О программе», либо имя скачанного файла
-      placeholder: "1.0.0"
+      placeholder: "2.0.0"
     validations:
       required: true
 
@@ -86,4 +86,4 @@ body:
     id: extra
     attributes:
       label: Дополнительно
-      description: Скриншоты, выходные файлы, версия Windows — всё, что считаете важным.
+      description: Скриншоты, выходные файлы, версия macOS и процессор (Apple Silicon или Intel) — всё, что считаете важным.

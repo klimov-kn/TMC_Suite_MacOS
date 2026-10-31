@@ -7,11 +7,11 @@ body:
       value: |
         Перед тем как спрашивать, возможно, ответ уже есть:
 
-        - [Справочник входного языка `.tpl`](../blob/main/docs/user-manual/tpl-guide.md) —
+        - [Справочник входного языка `.tpl`](https://www.tamic.ru/docs/user-manual/tpl-guide.html) —
           ключевые слова, примитивы, препроцессор, частотный свип, типичные ошибки;
-        - [Руководства пользователя](../tree/main/docs/user-manual) — по каждой программе,
+        - [Руководства пользователя](https://www.tamic.ru/docs/user-manual/index.html) — по каждой программе,
           с описанием каждого окна;
-        - [Инструкции по сборке](../tree/main/docs/build-guide) — если вопрос о компиляции.
+        - [Инструкции по сборке](https://www.tamic.ru/docs/platforms/macos.html#build) — если вопрос о компиляции.
 
   - type: dropdown
     id: topic

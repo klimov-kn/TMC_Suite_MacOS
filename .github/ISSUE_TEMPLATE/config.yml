@@ -1,11 +1,11 @@
 blank_issues_enabled: true
 contact_links:
   - name: Документация пакета
-    url: https://github.com/klimov-kn/TMC_Suite/tree/main/docs
+    url: https://www.tamic.ru/docs/platforms/macos.html
     about: Руководства пользователя, справочник языка .tpl, инструкции по сборке, описание архитектуры
   - name: Журнал изменений
-    url: https://github.com/klimov-kn/TMC_Suite/blob/main/CHANGELOG.md
+    url: https://github.com/klimov-kn/TMC_Suite_MacOS/blob/main/CHANGELOG.md
     about: Что исправлено в выпуске и какие ограничения известны
   - name: Сообщить об уязвимости
-    url: https://github.com/klimov-kn/TMC_Suite/security/advisories/new
+    url: https://github.com/klimov-kn/TMC_Suite_MacOS/security/advisories/new
     about: Приватный канал — сообщение видит только владелец репозитория
