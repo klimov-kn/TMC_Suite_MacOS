@@ -1,0 +1,241 @@
+/*
+**  TAMIC_soft(R)   25.10.1991, 1992, 07.07.1999    v2.00
+**
+**  expr_com.     : calculation expression
+**                    (string1 length n1) operation cod (string2 length n2)
+**
+**  FILE          :
+**                  expr_com.c,
+**  HEDER FILE'S  :
+**                  <string.h>
+**                  <stdio.h>
+**                  <stdlib.h>
+**                  <math.h>
+**                  <float.h>
+**                  <typedef.h>
+**                  "expr.h"
+**
+**  LIB           : NO
+**
+**  OVERLAY       : NO
+**
+*/
+
+/// @file EXPR_COM.CPP
+/// @brief Выполнение одной операции или функции вычислителя (`expr_comp`) и выбор единиц угла.
+///
+/// Часть библиотеки `exprint` (Expr). Переполнение проверяется по пределу типа `_real`
+/// (`TMC_EXPR_MAX` = REAL_MAX, I-03; раньше — по FLT_MAX и только сверху).
+/// @see https://www.tamic.ru/docs/code/lib-expr.html#operations
+#include <stdio.h>
+#include <stdlib.h>
+#include <float.h>
+#include <math.h>
+
+#include <Typedef.h>
+#include <EXPR.H>
+
+// I-03: the overflow limit is the limit of _real (DBL_MAX for double), both signs (old: FLT_MAX, from above only)
+/// I-03: предел переполнения — предел типа `_real` (REAL_MAX: DBL_MAX для double, FLT_MAX для float).
+#define TMC_EXPR_MAX REAL_MAX
+
+/// Множитель перевода аргумента в радианы, если угол задан в радианах.
+#define RADIAN      (_real)1.0
+/// Множитель перевода градусов в радианы.
+#define GRADUS      (_real)(PI/180.0)
+
+/// Текущий множитель угла: аргумент `sin`/`cos`/`tan` умножается на него, результат
+/// `asin`/`acos`/`atan` делится на него. Общий для всех потоков; по умолчанию — градусы.
+static _real expr_angle = GRADUS;
+
+void  expr_set_angle( int flag )
+ {
+  if( flag == EXPR_GRADUS ) expr_angle = GRADUS;
+   else expr_angle = RADIAN;
+  }
+
+
+
+_real  expr_comp( int cod, char   *oper1, int n1, char   *oper2, int n2 )
+ {                                             /* oper1-first operand string*/
+  _real op1, op2;                              /* n1   -his size*/
+   double rl;                                  /* oper2-second operand string*/
+                                               /* n2   -his size*/
+                                               /* cod  -operation cod*/
+  if( expr_get_error_cod() != 0  ) return 0;
+
+
+  if( n1 == 0 ) op1 = (_real) 0.0;             /* if n1 != 0*/
+   else op1=expr_inter( oper1, n1);            /* calculation op1*/
+                                               /* op1  -significance oper1*/
+  if( cod > LOG10 )
+   {
+    if( n2 == 0 )
+     {
+      op2=(_real)0;
+      expr_set_error_cod( ERROR_EXPRESSION );
+      }                                        /* if n2 != 0*/
+     else op2=expr_inter( oper2, n2);          /* calculation op2*/
+    };                                         /* op2  -significance oper1*/
+
+  switch( cod)
+   {
+     case '='  : if( expr_is_per( oper1, n1) != 0 )         /*if cod := op1=op2*/
+		  {
+		   expr_set_error_cod( ERROR_VAR );
+		   return( (_real)0.0 );
+		   };
+		 expr_set_per( oper1, n1, op2);
+		 return(  (_real)(op2) );
+     case '^'  : 
+		 // Степень: отрицательное основание допустимо только с целым показателем
+		 if( op1 <= (_real)0 )         /*if cod := op1^op2*/
+		  {
+		   // A-10: a base <= 0 with an integer exponent is computed ((-2)^3 = -8, 0^2 = 0);
+		   //       a fractional exponent, 0^0 and 0^(y<0) are an error (B-23).
+		   //       Old code (any base <= 0 was an error):
+		   //         expr_set_error_cod( ERROR_POW );
+		   //         return((_real)0);
+		   if( (op2 != (_real)floor( op2 ))||((op1 == (_real)0)&&(op2 <= (_real)0)) )
+		    {
+		     expr_set_error_cod( ERROR_POW );
+		     return((_real)0);
+		     };
+		   rl = pow( op1, op2 );
+		   if( fabs( rl ) > TMC_EXPR_MAX )	// I-03 (old: FLT_MAX)
+		    {
+		     expr_set_error_cod( ERROR_OVERFLOW );
+		     return((_real)FLT_MAX);
+		     };
+		   return( (_real)rl );
+		   };
+		 // Положительное основание: грубая оценка переполнения по log(FLT_MAX)/log(op1)
+		 if( op2 > (_real)fabs(log(TMC_EXPR_MAX)/log(op1)) )	// I-03 (old: FLT_MAX)
+		  {
+		   rl = pow( op1, op2 );   // S-19: for 0 < x < 1 the limit above is wrong (0.5^200 is small)
+		   if( (op1 < (_real)1)&&(rl <= TMC_EXPR_MAX) ) return( (_real)rl );
+		   expr_set_error_cod( ERROR_OVERFLOW );
+		   return((_real)FLT_MAX);
+		   };
+		 return( (_real)pow( op1, op2) );
+     case '+'  :                               /*if cod := op1+op2*/
+		 rl= (double)op1+(double)op2;
+		 if( fabs( rl ) > TMC_EXPR_MAX )	// I-03 (old: rl > FLT_MAX)
+		  {
+		   expr_set_error_cod( ERROR_OVERFLOW );
+		   return( (_real)FLT_MAX );
+		   };
+		 return( (_real)rl );
+     case '-'  :                               /*if cod := op1-op2*/
+		 rl = (double)op1-(double)op2;
+		 if( fabs( rl ) > TMC_EXPR_MAX )	// I-03 (old: rl > FLT_MAX)
+		  {
+		   expr_set_error_cod( ERROR_OVERFLOW );
+		   return( (_real)FLT_MAX );
+		   };
+		 return( (_real)rl );
+     case '*'  :                               /*if cod := op1*op2*/
+		 rl = (double)op1*(double)op2;
+		 if( fabs( rl ) > TMC_EXPR_MAX )	// I-03 (old: rl > FLT_MAX)
+		  {
+		   expr_set_error_cod( ERROR_OVERFLOW );
+		   return( (_real)FLT_MAX );
+		   };
+		 return( (_real)rl );
+     case '/'  : if( op2 == (_real)0 )         /*if cod := op1/op2*/
+		  {
+		   expr_set_error_cod( ERROR_DIV_0 );
+		   return((_real)FLT_MAX);
+		   };
+		 rl = (double)op1/(double)op2;
+		 if( fabs( rl ) > TMC_EXPR_MAX )	// I-03 (old: rl > FLT_MAX)
+		  {
+		   expr_set_error_cod( ERROR_OVERFLOW );
+		   return( (_real)FLT_MAX );
+		   };
+		 return( (_real)rl );
+     case EXP  :                              /*if cod := exp(op1)*/
+                  if( op1 > (_real)log(TMC_EXPR_MAX))	// I-03 (old: FLT_MAX)
+                   {
+		    expr_set_error_cod( -cod );
+                    return( (_real)FLT_MAX );
+                    };
+                  return( (_real)exp(op1));
+     case SIN  :                               /*if cod := sin(op1)*/
+                  if( fabs(op1) > FLT_MAX_SIN)
+                   {
+		    expr_set_error_cod( -cod);
+                    return( (_real)0 );
+                    };
+		  return( (_real)sin( op1*expr_angle ) );
+     case COS  :                               /*if cod := cos(op1)*/
+                  if( fabs(op1) > FLT_MAX_SIN)
+                   {
+		    expr_set_error_cod( -cod);
+                    return( (_real)0 );
+                    };
+		  return( (_real)cos( op1*expr_angle ) );
+     case TAN  :                               /*if cod := tan(op1)*/
+		 if( fabs(op1) > FLT_MAX_SIN)
+		  {
+		   expr_set_error_cod( -cod);
+		   return( (_real)0 );
+		   };
+		 return( (_real)tan(op1*expr_angle ) );
+     case ABS  : return( (_real)fabs(op1));    /*if cod := abs(op1)*/
+     case LOG  : if( op1 <= (_real)0.0 )       /*if cod := log(op1)*/
+		  {
+		   expr_set_error_cod( -cod );
+		   return((_real)0);
+		   };
+		 return( (_real)log(op1) );
+     case SQRT : if( op1 < (_real)0)           /*if cod := sqrt(op1)*/
+		  {
+		   expr_set_error_cod( -cod );
+		   return((_real)0);
+		   };
+		 return( (_real)sqrt(op1) );
+     case SINH :                               /*if cod := sinh(op1)*/
+		 if( fabs(op1) > (_real)log(TMC_EXPR_MAX))	// I-03 (old: op1 > log(FLT_MAX))
+		  {
+		   expr_set_error_cod( -cod );
+		   return( (_real)FLT_MAX );
+		   };
+		 return( (_real)sinh(op1));
+     case COSH :                               /*if cod := cosh(op1)*/
+		 if( fabs(op1) > (_real)log(TMC_EXPR_MAX))	// I-03 (old: op1 > log(FLT_MAX))
+		  {
+		   expr_set_error_cod( -cod );
+		   return( (_real)FLT_MAX );
+		   };
+		 return( (_real)cosh(op1));
+     case TANH :                               /*if cod := tanh(op1)*/
+		 return( (_real)tanh(op1));
+     case ASIN : if( fabs(op1) > (_real)1.)    /*if cod := asin(op1)*/
+		  {
+		   expr_set_error_cod( -cod );
+		   return((_real)0);
+		   };
+		 return( (_real)asin(op1)/expr_angle );
+     case ACOS :                               /*if cod := acos(op1)*/
+		 if( fabs(op1) > (_real)1)
+		  {
+		   expr_set_error_cod( -cod );
+		   return((_real)0);
+		   };
+		 return( (_real)acos(op1)/expr_angle );
+     case ATAN :                               /*if cod := atan(op1)*/
+		 return( (_real)atan(op1)/expr_angle );
+     case LOG10 :                              /*if cod := log10(op1)*/
+		  if( op1 <= (_real)0 )
+		   {
+		    expr_set_error_cod( -cod );
+		    return((_real)0);
+		    };
+		  return( (_real)log10(op1) );
+
+     default    : expr_set_error_cod( -cod );      /*if cod := 0 & set error cod*/
+		  return((_real)0);
+   };
+ }
+

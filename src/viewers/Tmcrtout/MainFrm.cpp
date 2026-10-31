@@ -1,0 +1,134 @@
+// MainFrm.cpp : implementation of the CMainFrame class
+//
+
+/// @file MainFrm.cpp
+/// @brief Рамка главного окна TMCROS: строка состояния из двух ячеек, сохранение положения окна.
+///
+/// Часть модуля «Вьювер TMCROS» (копия рамки TMCGROUT). В Qt6-версии используется только как носитель строки
+/// состояния для `PutTrace`/`PutStatistics`.
+/// @see https://www.tamic.ru/docs/code/tmcgrout.html#qt-shell
+#include "StdAfx.h"
+#include "TMCGROUT.h"
+
+#include "MainFrm.h"
+#include "TMCGROUTDoc.h"
+
+
+/////////////////////////////////////////////////////////////////////////////
+// CMainFrame
+
+IMPLEMENT_DYNAMIC(CMainFrame, CMDIFrameWnd)
+
+BEGIN_MESSAGE_MAP(CMainFrame, CMDIFrameWnd)
+	ON_WM_CREATE()
+	ON_WM_DESTROY()
+END_MESSAGE_MAP()
+
+/// Ячейки строки состояния: две ячейки без индикаторов клавиш (координаты и величина Y).
+static UINT indicators[] =
+{
+	ID_SEPARATOR,           // status line indicator
+	ID_SEPARATOR,           
+//	ID_INDICATOR_CAPS,
+//	ID_INDICATOR_NUM,
+//	ID_INDICATOR_SCRL,
+};
+
+/////////////////////////////////////////////////////////////////////////////
+// CMainFrame construction/destruction
+
+CMainFrame::CMainFrame()
+{
+	
+}
+
+CMainFrame::~CMainFrame()
+{
+}
+
+int CMainFrame::OnCreate(LPCREATESTRUCT lpCreateStruct)
+{
+	if (CMDIFrameWnd::OnCreate(lpCreateStruct) == -1)
+		return -1;
+	
+	if (!m_wndToolBar.Create(this) ||
+		!m_wndToolBar.LoadToolBar(IDR_MAINFRAME))
+	{
+		TRACE0("Failed to create toolbar\n");
+		return -1;      // fail to create
+	}
+
+	if (!m_wndStatusBar.Create(this) ||
+		!m_wndStatusBar.SetIndicators(indicators,
+		  sizeof(indicators)/sizeof(UINT)))
+	{
+		TRACE0("Failed to create status bar\n");
+		return -1;      // fail to create
+	}
+
+	// TODO: Remove this if you don't want tool tips or a resizeable toolbar
+	m_wndToolBar.SetBarStyle(m_wndToolBar.GetBarStyle() |
+		CBRS_TOOLTIPS | CBRS_FLYBY | CBRS_SIZE_DYNAMIC);
+
+	// TODO: Delete these three lines if you don't want the toolbar to
+	//  be dockable
+	m_wndToolBar.EnableDocking(CBRS_ALIGN_ANY);
+	EnableDocking(CBRS_ALIGN_ANY);
+	DockControlBar(&m_wndToolBar);
+
+	return 0;
+}
+
+BOOL CMainFrame::PreCreateWindow(CREATESTRUCT& cs)
+{
+
+
+	cs.style = WS_OVERLAPPED | WS_CAPTION | FWS_ADDTOTITLE
+		| WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_MAXIMIZE;
+
+
+//	cs.style = WS_OVERLAPPED | WS_CAPTION | FWS_ADDTOTITLE
+//		| WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_MAXIMIZE;
+
+	return CMDIFrameWnd::PreCreateWindow(cs);
+
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// CMainFrame diagnostics
+
+#ifdef _DEBUG
+void CMainFrame::AssertValid() const
+{
+	CMDIFrameWnd::AssertValid();
+}
+
+void CMainFrame::Dump(CDumpContext& dc) const
+{
+	CMDIFrameWnd::Dump(dc);
+}
+
+#endif //_DEBUG
+
+/////////////////////////////////////////////////////////////////////////////
+// CMainFrame message handlers
+
+void CMainFrame::OnDestroy() 
+{
+
+	WINDOWPLACEMENT sWndPl;
+	sWndPl.length = sizeof( WINDOWPLACEMENT );
+	if( GetWindowPlacement( &sWndPl ) )
+	{
+		if( sWndPl.showCmd == SW_SHOWNORMAL )
+		{
+			char szBuffer[300];
+//			CString csBuf1;
+			sprintf( szBuffer, "%d %d %d %d", (int)(sWndPl.rcNormalPosition.left), (int)(sWndPl.rcNormalPosition.right), (int)(sWndPl.rcNormalPosition.top), (int)(sWndPl.rcNormalPosition.bottom)  );
+			AfxGetApp()->WriteProfileString( TMC_GROTS_DOCFILE_ID, TMC_GROUT_DOCFILE_ID_INIWND, szBuffer);
+		};
+	};
+	
+	CMDIFrameWnd::OnDestroy();
+	return;
+}

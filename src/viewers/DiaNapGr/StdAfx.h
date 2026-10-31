@@ -1,0 +1,20 @@
+// stdafx.h : include file for standard system include files,
+//  or project specific include files that are used frequently, but
+//      are changed infrequently
+//
+
+/// @file StdAfx.h
+/// @brief Общий заголовок вьювера TMC_DN: подключает заголовки MFC (в Qt6-версии — слоя совместимости).
+///
+/// Часть модуля «Вьювер TMC_DN»; совпадает с `stdafx.h` вьювера TMCGROUT.
+/// @see https://www.tamic.ru/docs/code/compat.html#headers
+
+
+#include <afxwin.h>         // MFC core and standard components
+#include <afxext.h>         // MFC extensions
+#include <afxdisp.h>        // MFC OLE automation (нужно для AfxOleInit на совр. Windows)
+#include <afxcmn.h>			// MFC support for Windows Common Controls
+
+
+
+

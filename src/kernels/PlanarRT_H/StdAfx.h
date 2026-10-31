@@ -1,0 +1,21 @@
+// stdafx.h : include file for standard system include files,
+//  or project specific include files that are used frequently, but
+//      are changed infrequently
+//
+
+/// @file StdAfx.h
+/// @brief Общий заголовок всех файлов ядра: подключает заголовки MFC (в Qt-версии — заглушки слоя совместимости).
+///
+/// Часть модуля «Оболочка счётного ядра». В Qt-версии `afxwin.h`, `afxext.h`,
+/// `afxdisp.h`, `afxcmn.h` находятся в `compat/include`.
+/// @see https://www.tamic.ru/docs/code/compat.html#headers
+
+
+#include <afxwin.h>         // MFC core and standard components
+#include <afxext.h>         // MFC extensions
+#include <afxdisp.h>        // MFC OLE automation (нужно для AfxOleInit на совр. Windows)
+#include <afxcmn.h>			// MFC support for Windows Common Controls
+
+
+
+

@@ -1,0 +1,1435 @@
+// c2DArray.cpp: implementation of the c2DArray class.
+//
+//////////////////////////////////////////////////////////////////////
+
+/// @file c2DArray.cpp
+/// @brief Реализация `c2DArray`: чтение `.DAT`, сумма полей излучателей, нормировка, КНД и КИП, кэш ДН, девиации.
+///
+/// Часть модуля «Вьювер TMC_DN». Описание методов — в `c2darray.h`.
+/// @see https://www.tamic.ru/docs/code/tmc-dn.html#calc-flow
+#include "StdAfx.h"
+#include <io.h>
+#include <fcntl.h>
+#include <float.h>
+#include <string.h>
+#include <math.h>
+#include <sys/types.h>	// T-28: razmer faila
+#include <sys/stat.h>
+#include <Typedef.h>
+#include <EXPR.H>
+#include "c2DArray.h"
+
+// S-50: podpis kesha DN - versiya formata kesha, razmer i vremya .DAT, chislo izluchatelei, chastota
+/// @brief Строит подпись кэша ДН: версия формата кэша, размер и время записи `.DAT`, число излучателей, частота.
+///
+/// Подпись пишется в `<кэш>.chk` и сравнивается при следующем чтении: другая подпись —
+/// кэш не годен (файл `.DAT` заменили, хотя время записи кэша новее).
+/// @param[in]  szDat  путь к файлу `.DAT`
+/// @param[in]  nIzl1  число излучателей
+/// @param[in]  dFreq1 частота, Гц
+/// @param[out] szSign буфер подписи
+/// @param[in]  nSize  размер буфера, байт
+/// @return TRUE — подпись построена; FALSE — файл `.DAT` недоступен.
+/// @see https://www.tamic.ru/docs/code/tmc-dn.html#cache
+static BOOL TmcDnCacheSign( const char *szDat, int nIzl1, double dFreq1, char *szSign, int nSize )
+{
+	struct stat stDat;
+	if( stat( szDat, &stDat ) != 0 ) return FALSE;
+	snprintf( szSign, nSize, "TMC_DN cache v1; size %.0f; mtime %.0f; N %d; F %.12g;",
+		(double)stDat.st_size, (double)stDat.st_mtime, nIzl1, dFreq1 );
+	return TRUE;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Construction/Destruction
+//////////////////////////////////////////////////////////////////////
+
+c2DArray::c2DArray()
+{
+	nMaxTemporary = 400;
+	bIsReduceElMagnAnalysis = TRUE;
+	bIsInitialData = FALSE;
+	dFreq = 0;
+	nIzl  = 0;
+	iN = 0;
+	nPointForNormir = 1000;
+	pcIzl = NULL;
+	sprintf( szError, "No Error" );
+	szFileName[0] = '\0';
+	szFileNameOut[0] = '\0';
+	szOneExpression[0] = '\0';
+	szFileNameTemp[0] = '\0';	
+	bIsError = FALSE;
+	nAngle    = 400;
+	pdAngle   = NULL;
+	pdRequiredDN = NULL;
+	pdRealDN  = NULL;
+	pdImageDN = NULL;
+	IsNormirovka = FALSE;
+	dMax = -1.;
+	InitAngle();
+	dKnd = FLT_MIN;
+	dKip = FLT_MIN;
+	expr_set_angle( EXPR_RADIAN );
+	return;
+}
+
+c2DArray::~c2DArray()
+{
+	if( nIzl < nMaxTemporary )
+	{
+		if( strlen(szFileNameTemp) >= 1 ) remove(szFileNameTemp);
+	}
+
+	if( strlen(szFileNameOut) >= 1 ) remove(szFileNameOut);
+
+	DeleteAngle();
+	DeleteData();
+
+	return;
+}
+
+void c2DArray::DeleteData()
+{
+	nPointForNormir = 1000;
+	dFreq = 0;
+	nIzl  = 0;
+	iN = 0;
+	if( pcIzl != NULL )
+	{
+		delete []pcIzl;
+		pcIzl = NULL;
+	};
+	IsNormirovka = FALSE;
+	dMax = -1.;
+	sprintf( szError, "No Error" );
+	szFileName[0] = '\0';
+	szFileNameOut[0] = '\0';
+	szOneExpression[0] = '\0';
+	bIsError = FALSE;
+	dKnd = FLT_MIN;
+	dKip = FLT_MIN;
+	return;
+}
+
+BOOL c2DArray::IsError()
+{
+	return bIsError;
+}
+
+char* c2DArray::GetError()
+{
+	return szError;
+}
+
+int c2DArray::GetnAngle()
+{
+	return nAngle;
+}
+
+void c2DArray::ReadData(char *szFileName1)
+{
+	if( (nIzl > nMaxTemporary)&&bIsInitialData ) return;
+	DeleteData();
+	if( strlen( szFileName1 ) > ( TMC_C2DARRAY_MAX_STRING - 200 ) )	// BUG-021, BUG-023: imena i teksty oshibok - 1000 bait
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Input file name is too long (%d characters)", (int)strlen( szFileName1 ) );
+		return;
+	};
+	sprintf( szFileName, "%s", szFileName1 );
+	sprintf( szFileNameTemp, "%s_Temp%d", szFileName, bIsReduceElMagnAnalysis );
+	ReadData();
+	return;
+}
+
+void c2DArray::WriteData(char *szFileName1)
+{
+	if( (nIzl > nMaxTemporary)&&bIsInitialData ) return;
+	if( bIsError ) return;	// BUG-021, BUG-023
+	if( strlen( szFileName1 ) > ( TMC_C2DARRAY_MAX_STRING - 200 ) )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Output file name is too long (%d characters)", (int)strlen( szFileName1 ) );
+		return;
+	};
+
+	sprintf( szFileNameOut, "%s%d", szFileName1, bIsReduceElMagnAnalysis );
+	WriteData();
+	return;
+}
+
+void c2DArray::ReadData()
+{
+	if( bIsError ) return;
+
+	if( strlen( szFileName ) == 0 )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Input File name is NULL");
+		return;
+	}
+
+	FILE *fp;
+	char szBuf[TMC_C2DARRAY_MAX_STRING + 64];
+	char szBuf1[TMC_C2DARRAY_MAX_STRING];
+	int i, j;
+	double x, y, a, f, dFiMax, dFiMin;
+
+	if( ( fp = fopen( szFileName , "r") ) == NULL ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when open input data file %s", szFileName);
+		return;
+	};
+
+
+	if( fgets( szBuf, TMC_C2DARRAY_MAX_STRING, fp ) == NULL ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when read Frequence from input data file %s", szFileName);
+		fclose( fp );
+		return;
+	};
+	if( sscanf( szBuf, "Frequence = %lg Ghz;", &dFreq ) != 1 ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when read Frequence from input data file %s", szFileName);
+		fclose( fp );
+		return;
+	};
+	dFreq *= 1000000000;
+
+	if( fgets( szBuf, TMC_C2DARRAY_MAX_STRING, fp ) == NULL ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when read Number of emitter from input data file %s", szFileName);
+		fclose( fp );
+		return;
+	};
+	if( sscanf( szBuf, "N = %d;", &nIzl ) != 1 ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when read Number of emitter from input data file %s", szFileName);
+		fclose( fp );
+		return;
+	};
+	
+	if( (nIzl > nMaxTemporary)&&bIsInitialData ) 
+	{
+		fclose( fp );
+		return;
+	};
+
+	// Большая решётка: сетка графика -pi..pi из 1000 точек (её уже не меняет ResizeAngle).
+	if( (nIzl > nMaxTemporary) ) 
+	{
+		nAngle = 1000;
+		InitAngle();
+		double dAngleMax, dAngleMin, dStep;
+
+		dAngleMax = 3.141592653589;
+		dAngleMin = -3.141592653589;
+
+		for( i = 0, dStep = (dAngleMax - dAngleMin)/(nAngle - 1); i < nAngle; i++ )
+		{
+			pdAngle[ i ] = dAngleMin + i*dStep;
+		}
+	};
+
+	if( fgets( szBuf, TMC_C2DARRAY_MAX_STRING, fp ) == NULL ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when read Number of emitter from input data file %s", szFileName);
+		fclose( fp );
+		return;
+	};
+	if( strlen( szBuf ) < 1 ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when read Expression for Directional pattern of one emitter from input data file %s", szFileName);
+		fclose( fp );
+		return;
+	};
+	strcpy( szOneExpression, szBuf );
+	
+	if( nIzl < 1 )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when read Number of emitter = %d < 1 from input data file %s", nIzl, szFileName);
+		fclose( fp );
+		return;
+	};
+	{															// T-28: N ne bolshe chisla strok v faile
+		struct stat stDat;
+		if( ( stat( szFileName, &stDat ) == 0 )&&( (double)nIzl > (double)stDat.st_size/32. + 1. ) )
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Number of emitter N = %d does not match the size of input data file %s", nIzl, szFileName);
+			fclose( fp );
+			return;
+		};
+	};
+
+	InitData();
+	if( bIsError )
+	{
+		fclose( fp );
+		return;
+	};
+
+	for( i = 0; i < nIzl; i++ )
+	{
+		if( fgets( szBuf, TMC_C2DARRAY_MAX_STRING, fp ) == NULL ) 
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Error when read emitter N %d from input data file %s", i, szFileName);
+			fclose( fp );
+			return;
+		};
+		// Строка излучателя: 8 полей (с сектором и ДН излучателя) или 5 полей (сектор -180..180,
+		// изотропный излучатель). Номер в начале строки не проверяется.
+		if( sscanf( szBuf, "%d   X = %lg mm; Y = %lg mm; Amplitude = %lg; Faza = %lg degree; FiMin = %lg degree; FiMax = %lg degree; %s", &j, &x, &y, &a, &f, &dFiMin, &dFiMax, szBuf1 ) != 8 )
+		{
+			dFiMin = -180.;
+			dFiMax =  180.;
+			szBuf1[0] = '\0';
+
+			int nEnd = 0;	// N-34: stroka dolzhna zakanchivatsya "degree;"
+			if( ( sscanf( szBuf, "%d   X = %lg mm; Y = %lg mm; Amplitude = %lg; Faza = %lg degree;%n", &j, &x, &y, &a, &f, &nEnd ) != 5 )||( nEnd == 0 ) )
+			{
+				bIsError = TRUE;
+				sprintf( szError, "Error when read emitter N %d from input data file %s", i, szFileName);
+				fclose( fp );
+				return;
+			};
+		};
+		if( !_finite( x )||!_finite( y )||!_finite( a )||!_finite( f )||!_finite( dFiMin )||!_finite( dFiMax ) )	// S-53
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Emitter N %d in input data file %s: value is not a finite number", i+1, szFileName);
+			fclose( fp );
+			return;
+		};
+		// Единицы внутри объекта: мм -> м, градусы -> радианы.
+		pcIzl[i].SetdXcoordinata(x/1000.);
+		pcIzl[i].SetdYcoordinata(y/1000.);
+		pcIzl[i].SetdAmplituda(a);
+		pcIzl[i].SetdFaza(f*3.141592653589/180.);
+
+		// Секторы выключены (мода 1 строки графика = 0): каждый излучатель излучает во все стороны.
+		if( !bIsReduceElMagnAnalysis )
+		{
+			dFiMin = -180.;
+			dFiMax =  180.;
+		};
+
+		pcIzl[i].SetdFimin(dFiMin*3.141592653589/180.);
+		pcIzl[i].SetdFimax(dFiMax*3.141592653589/180.);
+		pcIzl[i].SetcsEmitterDirectPat( szBuf1 );
+	};
+
+	fclose( fp );
+	return;
+}
+
+void c2DArray::WriteData()
+{
+	if( bIsError ) return;
+	if( (nIzl > nMaxTemporary)&&bIsInitialData ) return;
+
+	if( strlen( szFileNameOut ) == 0 )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Output File name is NULL");
+		return;
+	}
+
+	FILE *fp;
+	int i;
+	double x, y, a, f, dFiMax, dFiMin;
+	CString csBuf;
+
+	if( ( fp = fopen( szFileNameOut , "w") ) == NULL )
+	{
+		WriteTemporaryFile();		// S-51: listing ne zapisan (papka tolko dlya chteniya) - ne oshibka
+		return;
+	};
+
+
+	dFreq /= 1000000000;
+	if( fprintf( fp, "Frequence = %lg Ghz;\n", dFreq ) < 0 ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when write Frequence to output data file %s", szFileNameOut);
+		fclose( fp );
+		return;
+	};
+	dFreq *= 1000000000;
+
+	if( fprintf( fp, "N = %d;\n", nIzl ) < 0 ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when write Number of emitter to output data file %s", szFileNameOut);
+		fclose( fp );
+		return;
+	};
+
+	if( fprintf( fp, "%s\n", szOneExpression ) < 0 ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when write Expression for one element of array of emitter to output data file %s", szFileNameOut);
+		fclose( fp );
+		return;
+	};
+
+	for( i = 0; i < nIzl; i++ )
+	{
+		x = 1000 * pcIzl[i].GetdXcoordinata();
+		y = 1000 * pcIzl[i].GetdYcoordinata();
+		a = pcIzl[i].GetdAmplituda();
+		f = pcIzl[i].GetdFaza()*180./3.141592653589;
+		dFiMin = pcIzl[i].GetdFimin()*180./3.141592653589;
+		dFiMax = pcIzl[i].GetdFimax()*180./3.141592653589;
+		csBuf = pcIzl[i].GetcsEmitterDirectPat();
+		if(strlen(csBuf) < 1)
+		{
+			csBuf.Format("1.");
+		};
+		if( fprintf( fp, "%d   X = %lg mm; Y = %lg mm; Amplitude = %lg; Faza = %lg degree; FiMin = %lg degree; FiMax = %lg degree; %s\n", i+1, x, y, a, f, dFiMin, dFiMax, (LPCTSTR)csBuf ) < 0 ) 
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Error when write emitter N %d to output data file %s", i+1, szFileNameOut);
+			fclose( fp );
+			return;
+		};
+	};
+
+	if( IsCalculateKip() )
+	{
+		if( fprintf( fp, "\nKND = %lg;\nKND = %lg dB;\nEmitted Power = %lg;\n\nDiagrNapr\nAngleDegree\tAmplitue\tFazaDegree\n", GetKnd(), GetKnd_dB(), GetKip() ) < 0 ) 
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Error when write Number of emitter to output data file %s", szFileNameOut);
+			fclose( fp );
+			return;
+		};
+	}
+	else
+	{
+		if( fprintf( fp, "\nKND = %lg;\nKND = %lg dB;\nKip = %lg;\nKip = %lg dB;\nDiagrNapr\nAngleDegree\tAmplitue\tFazaDegree\n", GetKnd(), GetKnd_dB(), GetKip(), GetKip_dB() ) < 0 ) 
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Error when write Number of emitter to output data file %s", szFileNameOut);
+			fclose( fp );
+			return;
+		};
+	};
+
+	for( i = 0; i < nAngle; i++ )
+	{
+		a = pdRealDN[i];
+		f = pdImageDN[i]*180./3.141592653589;
+		if( fprintf( fp, "%lg\t%lg\t%lg\n", pdAngle[i]/3.141592653589*180., a, f ) < 0 ) 
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Error when write emitter N %d to output data file %s", i+1, szFileNameOut);
+			fclose( fp );
+			return;
+		};
+	};
+
+	fclose( fp );
+
+	WriteTemporaryFile();
+
+	return;
+}
+
+
+void c2DArray::InitData()
+{
+	if( bIsError ) return;
+	if( nIzl < 1 )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error Number of emitter = %d < 1 ", nIzl);
+		return;
+	};
+
+	if( pcIzl != NULL )
+	{
+		delete []pcIzl;
+		pcIzl = NULL;
+	};
+
+	try	// T-28: new brosaet std::bad_alloc, a ne vozvrashchaet NULL
+	{
+		pcIzl = new cIzl[ nIzl ];
+	}
+	catch( ... )
+	{
+		pcIzl = NULL;
+	};
+	if( pcIzl == NULL )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when allocation memory for emitter array ");
+		return;
+	};
+
+	if( (nAngle < 2)||( pdRealDN == NULL )||( pdImageDN == NULL ) ) return;
+	int i;
+	for( i = 0; i < nAngle; i++)
+	{
+		pdRealDN[ i ] = 0.0;
+		pdImageDN[ i ] = 0.0;
+	}
+
+	return;
+}
+
+void c2DArray::CalculateDiagrNapr(char *szInputFileName, char *szOutputFileName)
+{
+	ReadData(   szInputFileName );
+	CalculateDiagrNapr();
+	WriteData( szOutputFileName );
+	return;
+}
+
+void c2DArray::CalculateDiagrNapr()
+{
+	if( bIsError ) return;
+	if( (nAngle < 2)||( pdRealDN == NULL )||( pdImageDN == NULL ) ) return;
+	if( (nIzl > nMaxTemporary)&&bIsInitialData ) return;
+
+	double dReal, dImage, r1;
+	char szBuf1[TMC_C2DARRAY_MAX_STRING];
+
+	// Большая решётка с годным кэшем: ДН (ненормированная) читается из файла, сетка углов —
+	// тоже из кэша; негодный кэш удаляется и ДН считается заново на прежней сетке.
+	BOOL bFromCache = FALSE;	// S-50
+	if( IsDirectPatSaveInFile() )
+	{
+		int iA;
+		double *pdAngleSave = new double[ nAngle ];	// S-50: setka uglov - na sluchai plohogo kesha
+		for( iA = 0; iA < nAngle; iA++ ) pdAngleSave[ iA ] = pdAngle[ iA ];
+		ReadDataFromTempFile();
+		bFromCache = !bIsError;
+		if( !bFromCache )		// S-50: kesh ne chitaetsya - udalit i schitat zanovo na prezhnei setke uglov
+		{
+			char szChk[TMC_C2DARRAY_MAX_STRING + 64];
+			bIsError = FALSE;
+			sprintf( szError, "No Error" );
+			remove( szFileNameTemp );
+			snprintf( szChk, sizeof(szChk), "%s.chk", szFileNameTemp );
+			remove( szChk );
+			for( iA = 0; iA < nAngle; iA++ ) pdAngle[ iA ] = pdAngleSave[ iA ];
+		};
+		delete []pdAngleSave;
+	}
+	if( !bFromCache )
+	{				
+		// Сумма полей излучателей в каждой точке сетки: F = r1(phi) * (Re + j*Im);
+		// r1 — общая ДН элемента (выражение от f), для "1." множитель опущен.
+		if( strcmp("1.", szOneExpression) == 0 )
+		{
+			for( iN = 0; iN < nAngle; iN++)
+			{
+				dReal  = CalculateRealDN( pdAngle[ iN ] );
+				dImage = CalculateImageDN( pdAngle[ iN ] );
+				pdRealDN[ iN ] = sqrt( dReal*dReal + dImage*dImage );
+				pdImageDN[ iN ] = atan2( dImage, dReal );
+			};
+		}
+		else
+		{
+			for( iN = 0; iN < nAngle; iN++)
+			{
+				// Переменная f библиотеки выражений = угол точки, радианы (печатается с 6 значащими цифрами).
+				sprintf( szBuf1, "f=(%lg);", pdAngle[ iN ]);
+				if( i1nte_atof_1( szBuf1, &r1 ) != 0 )
+				{
+					bIsError = TRUE;
+					sprintf( szError, "Error when calculate expression for one Directional Pattern {%s}", expr_get_error());
+					return;
+				};
+				if( i1nte_atof_1( szOneExpression, &r1 ) != 0 )
+				{
+					bIsError = TRUE;
+					sprintf( szError, "Error when calculate expression for one Directional Pattern {%s}", expr_get_error());
+					return;
+				};
+				dReal  = r1*CalculateRealDN( pdAngle[ iN ] );
+				dImage = r1*CalculateImageDN( pdAngle[ iN ] );
+				pdRealDN[ iN ] = sqrt( dReal*dReal + dImage*dImage );
+				pdImageDN[ iN ] = atan2( dImage, dReal );
+			};
+		};
+	};
+
+	NormirovkaDiagrNapr();
+
+	return;
+}
+
+void c2DArray::InitAngle()
+{
+	if( bIsError ) return;
+	if( nAngle < 2 )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error Number of angle = %d < 2 ", nAngle);
+		return;
+	};
+	if( pdRequiredDN != NULL )
+	{
+		delete []pdRequiredDN;
+		pdRequiredDN = NULL;
+	};
+	if( pdRealDN != NULL )
+	{
+		delete []pdRealDN;
+		pdRealDN = NULL;
+	};
+
+	if( ( pdRequiredDN = new double[ nAngle ] ) == NULL )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when allocation memory for angle array ");
+		return;
+	};
+
+	if( ( pdRealDN = new double[ nAngle ] ) == NULL )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when allocation memory for angle array ");
+		return;
+	};
+
+	if( pdImageDN != NULL )
+	{
+		delete []pdImageDN;
+		pdImageDN = NULL;
+	};
+	if( ( pdImageDN = new double[ nAngle ] ) == NULL )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when allocation memory for angle array ");
+		return;
+	};
+
+	if( pdAngle != NULL )
+	{
+		delete []pdAngle;
+		pdAngle = NULL;
+	};
+	if( ( pdAngle = new double[ nAngle ] ) == NULL )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when allocation memory for angle array ");
+		return;
+	};
+
+	int i;
+	double dStep;
+
+	for( i = 0, dStep = 3.141592653589/(nAngle - 1); i < nAngle; i++ )
+	{
+		pdAngle[ i ] = i*dStep;
+	}
+
+	return;
+}
+
+void c2DArray::DeleteAngle()
+{
+	nAngle  = 0;
+	if( pdAngle != NULL )
+	{
+		delete []pdAngle;
+		pdAngle = NULL;
+	};	
+	if( pdRequiredDN != NULL )
+	{
+		delete []pdRequiredDN;
+		pdRequiredDN = NULL;
+	};
+	if( pdRealDN != NULL )
+	{
+		delete []pdRealDN;
+		pdRealDN = NULL;
+	};
+	if( pdImageDN != NULL )
+	{
+		delete []pdImageDN;
+		pdImageDN = NULL;
+	};
+}
+
+double c2DArray::CalculateRealDN(double dAngle)
+{
+	if( bIsError ) return 0.;
+	if( (nIzl < 1)||( pcIzl == NULL ) ) return 0.;
+
+	int i;
+	double d, a, f, x, y, c, alf1;
+
+	for( i = 0, d = 0.0; i < nIzl; i++)
+	{
+		a = pcIzl[i].GetdAmplituda( dAngle );
+		f = pcIzl[i].GetdFaza();
+		x = pcIzl[i].GetdXcoordinata();
+		y = pcIzl[i].GetdYcoordinata();
+		c = sqrt( x*x +y*y );
+		alf1 = atan2( y, x );
+		// Набег фазы излучателя в направлении phi: k * r * cos(phi - alpha), k = 2*pi*F/c.
+		d += a*cos( f + 2*3.141592653589*dFreq*c*cos( dAngle - alf1 )/299792458. );
+	}
+
+	return d;
+}
+
+double c2DArray::CalculateImageDN(double dAngle)
+{
+	if( bIsError ) return 0.;
+	if( (nIzl < 1)||( pcIzl == NULL ) ) return 0.;
+
+	int i;
+	double d, a, f, x, y, c, alf1;
+
+	for( i = 0, d = 0.0; i < nIzl; i++)
+	{
+		a = pcIzl[i].GetdAmplituda( dAngle );
+		f = pcIzl[i].GetdFaza();
+		x = pcIzl[i].GetdXcoordinata();
+		y = pcIzl[i].GetdYcoordinata();
+		c = sqrt( x*x +y*y );
+		alf1 = atan2( y, x );
+		d += a*sin( f + 2*3.141592653589*dFreq*c*cos( dAngle - alf1 )/299792458. );
+	}
+
+	return d;
+}
+
+double c2DArray::CalculateRealDN_ForKip(double dAngle)
+{
+	if( bIsError ) return 0.;
+	if( (nIzl < 1)||( pcIzl == NULL ) ) return 0.;
+
+	int i;
+	double d, a, f, x, y, c, alf1;
+
+	for( i = 0, d = 0.0; i < nIzl; i++)
+	{
+		a = 1.;
+		f = 0.;
+		x = pcIzl[i].GetdXcoordinata();
+		y = pcIzl[i].GetdYcoordinata();
+		c = sqrt( x*x +y*y );
+		alf1 = atan2( y, x );
+		d += a*cos( f + 2*3.141592653589*dFreq*c*cos( dAngle - alf1 )/299792458. );
+	}
+
+	return d;
+}
+
+double c2DArray::CalculateImageDN_ForKip(double dAngle)
+{
+	if( bIsError ) return 0.;
+	if( (nIzl < 1)||( pcIzl == NULL ) ) return 0.;
+
+	int i;
+	double d, a, f, x, y, c, alf1;
+
+	for( i = 0, d = 0.0; i < nIzl; i++)
+	{
+		a = 1.;
+		f = 0.;
+		x = pcIzl[i].GetdXcoordinata();
+		y = pcIzl[i].GetdYcoordinata();
+		c = sqrt( x*x +y*y );
+		alf1 = atan2( y, x );
+		d += a*sin( f + 2*3.141592653589*dFreq*c*cos( dAngle - alf1 )/299792458. );
+	}
+
+	return d;
+}
+
+// B-12 (26.10.2026): KND and KIP of the 2D task on a grid fine enough for the beam, one algorithm for any N.
+// Алгоритм нормировки, КНД и КИП описан в c2darray.h (NormirovkaDiagrNapr).
+void c2DArray::NormirovkaDiagrNapr()
+{
+	if( bIsError ) return;
+	if( (nAngle < 2)||( pdRealDN == NULL )||( pdImageDN == NULL ) ) return;
+
+	int i, nFine;
+	double x, y, r, r1, dAng, dStep, dRmax, dPow, dMaxKip, dIntKip;
+	BOOL bExpr;
+
+	if( !IsNormirovka )
+	{
+		IsNormirovka = TRUE;
+		// Электрический размер решётки задаёт густоту мелкой сетки: 64 точки на радиан набега фазы
+		// k*Rmax, чтобы не пропустить узкий главный лепесток и боковые лепестки.
+		for( i = 0, dRmax = 0.0; i < nIzl; i++ )
+		{
+			x = pcIzl[i].GetdXcoordinata();
+			y = pcIzl[i].GetdYcoordinata();
+			r = sqrt( x*x + y*y );
+			if( r > dRmax ) dRmax = r;
+		};
+		nFine = nPointForNormir;
+		r = 64.*2*3.141592653589*dFreq*dRmax/299792458.;
+		if( r + 1. > (double)nFine ) nFine = ( r + 1. > 4000000. ) ? 4000000 : (int)( r + 1. );
+		if( nFine < 16 ) nFine = 16;
+		bExpr = ( strcmp( "1.", szOneExpression ) != 0 );
+		dStep = 2*3.141592653589/nFine;
+		// Интегрирование по 0..2*pi методом прямоугольников: dKnd накапливает интеграл |F|^2,
+		// dMax — максимум |F|^2; для N <= 400 то же для опорной решётки КИП.
+		for( i = 0, dMax = 0.0, dKnd = 0.0, dMaxKip = 0.0, dIntKip = 0.0; i < nFine; i++ )
+		{
+			dAng = i*dStep;
+			r1 = 1.;
+			if( bExpr )
+			{
+				expr_set_per( (char *)"f", 1, (_real)dAng );
+				if( i1nte_atof_1( szOneExpression, &r1 ) != 0 )
+				{
+					bIsError = TRUE;
+					sprintf( szError, "Error when calculate expression for one Directional Pattern {%s}", expr_get_error());
+					return;
+				};
+			};
+			x = r1*CalculateRealDN( dAng );
+			y = r1*CalculateImageDN( dAng );
+			dPow = x*x + y*y;
+			dKnd += dPow*dStep;
+			if( dPow > dMax ) dMax = dPow;
+			if( !IsCalculateKip() )		// KIP: the uniform in-phase array of the same geometry (N <= 400, as before)
+			{
+				x = CalculateRealDN_ForKip( dAng );
+				y = CalculateImageDN_ForKip( dAng );
+				dPow = x*x + y*y;
+				dIntKip += dPow*dStep;
+				if( dPow > dMaxKip ) dMaxKip = dPow;
+			};
+		};
+		if( !( dMax > DBL_MIN )||!_finite( dMax )||!( dKnd > 0. )||!_finite( dKnd ) )	// S-53
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Directional pattern is identically zero or not a finite number");
+			return;
+		};
+		if( IsCalculateKip() )
+		{
+			// Большая решётка: КНД = 2*pi*max|F|^2 / интеграл |F|^2; нормировка графика — на его
+			// собственный максимум на сетке графика (dMax = max |F|).
+			dKip = dKnd;						// N > 400: "Kip" is the emitted power, Integral |F|^2 (as before)
+			dKnd = 2*3.141592653589*dMax/dKnd;
+			for( i = 0, r = 0.0; i < nAngle; i++ )
+			{
+				if( !_finite( pdRealDN[ i ] ) ) r = -1.;	// S-53
+				if( ( r >= 0. )&&( pdRealDN[ i ] > r ) ) r = pdRealDN[ i ];
+			};
+			if( !( r > DBL_MIN ) )
+			{
+				bIsError = TRUE;
+				sprintf( szError, "Directional pattern is identically zero or not a finite number");
+				return;
+			};
+			dMax = r;							// the plot is normalized by its own maximum, as before
+			for( i = 0; i < nAngle; i++ ) pdRealDN[ i ] /= dMax;
+			return;
+		};
+		// Малая решётка: КНД, КИП = КНД / КНД0 опорной решётки; dMax = 1.001 * max|F|.
+		dKnd = 2*3.141592653589*dMax/dKnd;
+		if( ( dIntKip > 0. )&&( dMaxKip > 0. ) ) dKip = dKnd/( 2*3.141592653589*dMaxKip/dIntKip );
+		else dKip = FLT_MIN;
+		dMax = sqrt( dMax );
+		dMax *= 1.001;
+	};
+
+	for( i = 0; i < nAngle; i++)
+	{
+		pdRealDN[ i ] /= dMax;
+	}
+
+	return;
+}
+
+// Прежний вариант нормировки (вне компиляции): оставлен для сверки.
+
+double c2DArray::GetdAngle(int i)
+{
+	if( bIsError ) return 0.0;
+	if( (nAngle < 2)||(nAngle <= i)||( pdRealDN == NULL )||( pdImageDN == NULL ) ) return 0.0;
+	return pdAngle[ i ];
+}
+
+double c2DArray::GetdAmplitudeDiagrNapr(int i)
+{
+	if( bIsError ) return 0.0;
+	if( (nAngle < 2)||(nAngle <= i)||( pdRealDN == NULL )||( pdImageDN == NULL ) ) return 0.0;
+	return pdRealDN[ i ];
+}
+
+void c2DArray::ResizeAngle(double dAngleMin, double dAngleMax)
+{
+	if( bIsError ) return;
+	if( (nAngle < 2)||( pdAngle == NULL )||( pdRealDN == NULL )||( pdImageDN == NULL ) ) return;
+	if( nAngle < 2 )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error Number of angle = %d < 2 ", nAngle);
+		return;
+	};
+	
+	if( (nIzl > nMaxTemporary)&&bIsInitialData ) return;
+
+	int i;
+	double dStep;
+
+	// Новая сетка графика; нормировка (IsNormirovka) не пересчитывается.
+	for( i = 0, dStep = (dAngleMax - dAngleMin)/(nAngle - 1); i < nAngle; i++ )
+	{
+		pdAngle[ i ] = dAngleMin + i*dStep;
+	}
+
+	CalculateDiagrNapr();
+	WriteData();
+
+	return;
+}
+
+double c2DArray::GetKnd()
+{
+	if( bIsError ) return 0.0;
+	return dKnd;
+}
+
+double c2DArray::GetKnd_dB()
+{
+	if( bIsError ) return 0.0;
+	return 10.*log10(dKnd);
+}
+
+double c2DArray::GetKip()
+{
+	if( bIsError ) return 0.0;
+	return dKip;
+}
+
+double c2DArray::GetKip_dB()
+{
+	if( bIsError ) return 0.0;
+	return 10.*log10(dKip);
+}
+
+int c2DArray::GetnIzl()
+{
+	if( bIsError ) return 0;
+	return nIzl;
+}
+
+
+char * c2DArray::GetOneExpression()
+{
+	return szOneExpression;
+}
+
+
+
+void c2DArray::OptimizationInit(char *szFileRequiDirPat, int nIzl1)
+{
+	if( strlen(szFileRequiDirPat) < 1 )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error: File name for required directional pattern is bad {%s}", szFileRequiDirPat);
+		return;
+	};
+
+	FILE *fp;
+	char szBuf[TMC_C2DARRAY_MAX_STRING + 64];
+	int i;
+	double f, d;
+
+	if( ( fp = fopen( szFileRequiDirPat , "r") ) == NULL ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when open optimization file %s", szFileRequiDirPat);
+		return;
+	};
+
+	for( i = 0; fgets( szBuf, TMC_C2DARRAY_MAX_STRING, fp ) != NULL ; )
+	{
+		if( sscanf( szBuf, "%lg%lg", &f, &d) == 2 ) i++;
+	};
+
+	fclose(fp);
+
+	if( i < 2 ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error in optimization file %s. Number Angles points  = %d < 2", szFileRequiDirPat, i);
+		return;
+	};
+
+	DeleteData();
+	DeleteAngle();
+	nAngle = i;
+	nIzl = nIzl1;
+	InitAngle();
+	InitData();
+	if( bIsError ) return;
+
+	if( ( fp = fopen( szFileRequiDirPat , "r") ) == NULL ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when open optimization file %s", szFileRequiDirPat);
+		return;
+	};
+
+	for( i = 0; i < nAngle ; )
+	{
+		if( fgets( szBuf, TMC_C2DARRAY_MAX_STRING, fp ) == NULL )
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Error when read optimization file %s", szFileRequiDirPat);
+			fclose(fp);
+			return;
+		};
+		if( sscanf( szBuf, "%lg%lg", &f, &d) == 2 )
+		{
+			pdAngle[ i ] = f*3.141592653589/180.;
+			pdRequiredDN[ i ] = d;
+			i++;
+		};
+	};
+
+	fclose(fp);
+	return;
+}
+
+void c2DArray::SetIzl(int i, double dXcoord_mm, double dYcoord_mm, double dAmplitud, double dFaza_gradus)
+{
+	if( bIsError ) return;
+	if( (i < 0)||(i >= nIzl) )	// I-30 (old: i > nIzl - one past the array)
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when set emitter %d", i);
+		return;
+	}
+
+	pcIzl[i].SetdXcoordinata(dXcoord_mm/1000.);
+	pcIzl[i].SetdYcoordinata(dYcoord_mm/1000.);
+	pcIzl[i].SetdAmplituda(dAmplitud);
+	pcIzl[i].SetdFaza(dFaza_gradus*3.141592653589/180.);
+
+	return;
+}
+
+
+void c2DArray::SetszOneExpression(char *ch)
+{
+	if( bIsError ) return;
+	strcpy( szOneExpression, ch );
+	return;
+}
+
+void c2DArray::SetdFrequence( double dFrequenceGHz )
+{
+	dFreq = dFrequenceGHz*1000000000.;
+	return;
+}
+
+
+void c2DArray::MakeDeviation(char *szSourceFile, char *szDistinationFile, double dXmm, double dYmm, double dAmplProcent, double dFazaDegree)
+{
+	ReadData( szSourceFile );
+	if( bIsError ) return;
+
+	int i;
+	double a, f, x, y;
+
+	for( i = 0; i < nIzl; i++)
+	{
+		a = pcIzl[i].GetdAmplituda();
+		// Равномерные случайные отклонения: амплитуда в процентах от себя, фаза и координаты — абсолютные.
+		pcIzl[i].SetdAmplituda( GetRnd( a, a*dAmplProcent/100.) );
+		
+		f = pcIzl[i].GetdFaza();
+		pcIzl[i].SetdFaza(GetRnd( f, dFazaDegree*3.141592653589/180.));
+		
+		x = pcIzl[i].GetdXcoordinata();
+		pcIzl[i].SetdXcoordinata(GetRnd( x, dXmm/1000.));
+		
+		y = pcIzl[i].GetdYcoordinata();
+		pcIzl[i].SetdYcoordinata(GetRnd( y, dYmm/1000.));
+	}
+
+	SaveData( szDistinationFile );
+	return;
+}
+
+// Z-20 (author 29.10): rand() without srand - the same set on every run, for now.
+/// З-20 (ответ автора 29.10.2026): rand() задаёт случайные ошибки излучателей по фазе и амплитуде;
+/// srand не вызывается — при каждом запуске набор одинаковый. Пока так и оставлено; в планах — выбор
+/// между повторяемым набором и новым при каждом расчёте.
+double c2DArray::GetRnd(double dMedium, double dDelta)
+{
+
+
+   double d;
+
+   d = RAND_MAX;
+
+   d = 2.*rand()/d;
+
+   d = dMedium + ( d - 1. )*dDelta;
+
+   return d;
+}
+
+void c2DArray::SaveData(char *pszFile)
+{
+	if( bIsError ) return;
+	if( strlen( pszFile ) == 0 )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Output File name is NULL");
+		return;
+	}
+
+	FILE *fp;
+	int i;
+	double x, y, a, f, dFiMax, dFiMin;	// A-31
+	CString csBuf;
+
+	if( ( fp = fopen( pszFile , "w") ) == NULL )  
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when open output data file %s", pszFile);
+		return;
+	};
+
+
+	dFreq /= 1000000000;
+	if( fprintf( fp, "Frequence = %lg Ghz;\n", dFreq ) < 0 ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when write Frequence to output data file %s", pszFile);
+		fclose( fp );
+		return;
+	};
+	dFreq *= 1000000000;
+
+	if( fprintf( fp, "N = %d;\n", nIzl ) < 0 ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when write Number of emitter to output data file %s", pszFile);
+		fclose( fp );
+		return;
+	};
+
+	if( fprintf( fp, "%s", szOneExpression ) < 0 ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when write Expression for one element of array of emitter to output data file %s", pszFile);
+		fclose( fp );
+		return;
+	};
+
+	for( i = 0; i < nIzl; i++ )
+	{
+		x = 1000 * pcIzl[i].GetdXcoordinata();
+		y = 1000 * pcIzl[i].GetdYcoordinata();
+		a = pcIzl[i].GetdAmplituda();
+		f = pcIzl[i].GetdFaza()*180./3.141592653589;
+		dFiMin = pcIzl[i].GetdFimin()*180./3.141592653589;	// A-31: format WriteData (8 polei)
+		dFiMax = pcIzl[i].GetdFimax()*180./3.141592653589;
+		csBuf = pcIzl[i].GetcsEmitterDirectPat();
+		if(strlen(csBuf) < 1)
+		{
+			csBuf.Format("1.");
+		};
+		if( fprintf( fp, "%d   X = %lg mm; Y = %lg mm; Amplitude = %lg; Faza = %lg degree; FiMin = %lg degree; FiMax = %lg degree; %s\n", i+1, x, y, a, f, dFiMin, dFiMax, (const char *)csBuf ) < 0 )  
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Error when write emitter N %d to output data file %s", i+1, pszFile);
+			fclose( fp );
+			return;
+		};
+	};
+
+	fclose( fp );
+	return;
+
+}
+
+
+void c2DArray::CopyIzlSector( c2DArray &cSource, int i )	// A-31
+{
+	if( bIsError ) return;
+	if( ( i < 0 )||( i >= nIzl )||( pcIzl == NULL )||( i >= cSource.nIzl )||( cSource.pcIzl == NULL ) )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when copy emitter %d", i);
+		return;
+	};
+	pcIzl[i].SetdFimin( cSource.pcIzl[i].GetdFimin() );
+	pcIzl[i].SetdFimax( cSource.pcIzl[i].GetdFimax() );
+	pcIzl[i].SetcsEmitterDirectPat( cSource.pcIzl[i].GetcsEmitterDirectPat() );
+	return;
+}
+
+void c2DArray::GetIzl(int i, double *dXmm, double *dYmm, double *dAmpl, double *dFazaDegree)
+{
+	if( bIsError ) return;
+	if( (i < 0)||(i >= nIzl) )	// I-30 (old: i > nIzl)
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when get emitter %d", i);
+		return;
+	}
+
+	*dXmm = pcIzl[i].GetdXcoordinata()*1000;
+	*dYmm = pcIzl[i].GetdYcoordinata()*1000;
+	*dAmpl = pcIzl[i].GetdAmplituda();
+	*dFazaDegree = pcIzl[i].GetdFaza()*180./3.141592653589;
+
+	return;
+}
+
+void c2DArray::SaveDeviationDirectionalPattern(char *pszFileName)
+{
+	CalculateDiagrNapr();
+	if( bIsError ) return;
+
+	if( strlen( pszFileName ) == 0 )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Output File name is NULL");
+		return;
+	}
+
+	if( (pdRealDN == NULL)||(pdImageDN == NULL)||(pdRequiredDN == NULL) )
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Output File name is NULL");
+		return;
+	}
+
+	FILE *fp;
+	int i;
+
+	if( ( fp = fopen( pszFileName , "w") ) == NULL ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when open output data file %s", pszFileName);
+		return;
+	};
+
+	if( fprintf( fp, "!Degree\tAmplitudeDirectPatternRequired\tAmplitudeDirectPattern\n") < 0 ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when write emitter N 0 to output data file %s", pszFileName);
+		fclose( fp );
+		return;
+	};
+
+	for( i = 0; i < nAngle; i++ )
+	{
+		if( fprintf( fp, "%lg\t%lg\t%lg\n", pdAngle[i]/3.141592653589*180., pdRequiredDN[i], pdRealDN[i] ) < 0 ) 
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Error when write emitter N %d to output data file %s", i+1, pszFileName);
+			fclose( fp );
+			return;
+		};
+	};
+
+	fclose( fp );
+	return;
+}
+
+double c2DArray::GetdFreqGHz()
+{
+	return dFreq/1000000000.;
+}
+
+void c2DArray::WriteTemporaryFile()
+{
+	if( bIsError ) return;
+	if( (nIzl > nMaxTemporary)&&bIsInitialData ) return;
+
+	FILE *fp;
+	int i;
+	double a, f;
+	CString csBuf;
+
+	{										// S-50: staraya podpis bolshe ne verna
+		char szChk[TMC_C2DARRAY_MAX_STRING + 64];
+		snprintf( szChk, sizeof(szChk), "%s.chk", szFileNameTemp );
+		remove( szChk );
+	};
+	if( ( fp = fopen( szFileNameTemp , "w") ) == NULL )
+	{
+		bIsInitialData = TRUE;		// S-51: DN poschitana; kesh ne zapisan (papka tolko dlya chteniya) - ne oshibka
+		return;
+	};
+
+	for( i = 0; i < nAngle; i++ )
+	{
+		a = pdRealDN[i];
+		f = pdImageDN[i]*180./3.141592653589;
+		if( fprintf( fp, "%lg\t%lg\t%lg\t%lg\n", pdAngle[i]/3.141592653589*180., a*dMax, a, f ) < 0 ) 
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Error when write emitter N %d to output data file %s", i+1, szFileNameOut);
+			fclose( fp );
+			return;
+		};
+	};
+
+	fclose( fp );
+
+	// Подпись кэша (.chk) нужна только тем решёткам, для которых кэш читается (N >= 400).
+	if( nIzl >= nMaxTemporary )		// S-50: podpis kesha (kesh ispolzuetsya pri nIzl >= nMaxTemporary)
+	{
+		char szSign[TMC_C2DARRAY_MAX_STRING], szChk[TMC_C2DARRAY_MAX_STRING + 64];
+		snprintf( szChk, sizeof(szChk), "%s.chk", szFileNameTemp );
+		if( TmcDnCacheSign( szFileName, nIzl, dFreq, szSign, TMC_C2DARRAY_MAX_STRING ) )
+		{
+			if( ( fp = fopen( szChk, "w" ) ) != NULL )
+			{
+				fprintf( fp, "%s\n", szSign );
+				fclose( fp );
+			};
+		};
+	};
+
+	bIsInitialData = TRUE;
+
+	return;
+}
+
+double c2DArray::GetdMax()
+{
+	return dMax;
+}
+
+// Z-19 (author 29.10): the threshold 400 - the aperture antennas.
+/// З-19 (ответ автора 29.10.2026): КИП считается для апертурных антенн значительной площади;
+/// порог nMaxTemporary = 400 излучателей взят как граница такого случая. Почему опорная решётка КИП
+/// берётся без ДН и секторов излучателей — автор не ответил.
+BOOL c2DArray::IsCalculateKip()
+{
+	return (nIzl > nMaxTemporary);
+}
+
+BOOL c2DArray::IsDirectPatSaveInFile()
+{
+	if( nIzl < nMaxTemporary ) return FALSE;
+	if( strlen( szFileName ) == 0 ) return FALSE;	// A-31: net vhodnogo faila (Deviation DirPat) - kesha net
+
+	FILE *fp;
+	if( ( fp = fopen( szFileName , "r") ) == NULL ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when open input data file %s", szFileName);
+		return FALSE;
+	};
+	fclose( fp );
+	if( ( fp = fopen( szFileNameTemp , "r") ) == NULL ) 
+	{
+		return FALSE;
+	};
+	fclose( fp );
+	
+	char szBuf[TMC_C2DARRAY_MAX_STRING + 64];
+    FILETIME LastWriteTimeInput, LastWriteTimeTemp;
+
+	sprintf( szBuf, "%s", szFileName );		// N-34: imya faila - ne stroka formata
+	LastWriteTimeInput = LastWriteTime( szBuf );
+	sprintf( szBuf, "%s", szFileNameTemp );
+	LastWriteTimeTemp = LastWriteTime( szBuf );
+
+	if( ( LastWriteTimeInput.dwLowDateTime == 0 )&&( LastWriteTimeInput.dwHighDateTime == 0 ) ) return FALSE;	// S-50: vremya ne prochitalos
+
+	// Кэш не старше .DAT: дополнительно сверить подпись (размер и время .DAT, N, частота).
+	if( CompareFileTime( &LastWriteTimeInput, &LastWriteTimeTemp) <= 0 )
+	{
+		char szSign[TMC_C2DARRAY_MAX_STRING], szSignFile[TMC_C2DARRAY_MAX_STRING];	// S-50: podpis kesha
+		if( !TmcDnCacheSign( szFileName, nIzl, dFreq, szSign, TMC_C2DARRAY_MAX_STRING ) ) return FALSE;
+		snprintf( szBuf, sizeof(szBuf), "%s.chk", szFileNameTemp );
+		if( ( fp = fopen( szBuf, "r" ) ) == NULL ) return FALSE;
+		szSignFile[0] = '\0';
+		if( fgets( szSignFile, TMC_C2DARRAY_MAX_STRING, fp ) == NULL ) szSignFile[0] = '\0';
+		fclose( fp );
+		szSignFile[strcspn( szSignFile, "\r\n" )] = '\0';
+		return ( strcmp( szSign, szSignFile ) == 0 );
+	};
+	return FALSE;
+}
+
+void c2DArray::ReadDataFromTempFile()
+{
+	if( bIsError ) return;
+
+	FILE *fp;
+	double a, f, an, ugol;
+	CString csBuf;
+
+	if( ( fp = fopen( szFileNameTemp , "r") ) == NULL ) 
+	{
+		bIsError = TRUE;
+		sprintf( szError, "Error when open output data file %s", szFileNameOut);
+		return;
+	};
+
+	for( iN = 0; iN < nAngle; iN++ )
+	{
+		if( fscanf( fp, "%lg\t%lg\t%lg\t%lg\n", &ugol, &a, &an, &f ) != 4 ) 	// S-50: bylo < 0 
+		{
+			bIsError = TRUE;
+			sprintf( szError, "Error when read emitter N %d from temporary data file %s", iN+1, szFileNameTemp);
+			fclose( fp );
+			return;
+		};
+		pdAngle[iN] = ugol*3.141592653589/180.;
+		pdRealDN[iN] = a;
+		pdImageDN[iN] = f*3.141592653589/180.;
+	};
+
+	fclose( fp );
+
+	return;
+
+}
+
+FILETIME c2DArray::LastWriteTime(char *szFileName1)
+{
+	HANDLE fh;
+	FILETIME LastWriteTime1;
+	LastWriteTime1.dwLowDateTime   = 0;
+	LastWriteTime1.dwHighDateTime  = 0;
+
+	// Время записи через Windows API (в Qt6-версии — реализация слоя совместимости).
+	fh =  CreateFile(
+    szFileName1,				// pointer to name of the file 
+    GENERIC_READ,			// access read mode 
+    FILE_SHARE_READ,		// share mode 
+    NULL,					// pointer to security descriptor 
+    OPEN_EXISTING,			// how to create 
+    FILE_ATTRIBUTE_NORMAL,	// file attributes 
+    NULL					// handle to file with attributes to copy  
+   );
+
+	GetFileTime( fh, NULL, NULL, &LastWriteTime1);
+
+	CloseHandle( fh );
+	
+	return LastWriteTime1;
+
+}
